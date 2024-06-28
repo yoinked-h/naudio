@@ -79,6 +79,7 @@ extend-exclude = ["/usr/lib/*"]
 [tool.ruff.lint]
 ignore = [
   "E501", # line too long - will be fixed in format
+  "F722", # jaxtyping forward annotation
 ]
 
 [tool.ruff.lint.isort]

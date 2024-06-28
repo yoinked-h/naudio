@@ -31,12 +31,11 @@ class FourierFeatures(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
         self.weight = nnx.Param(
-            jax.random.uniform(rngs.params(), (args.timestep_dim // 2, 1))
-            * args.timestep_std
+            jax.random.uniform(rngs.params(), (args.timestep_dim // 2, 1)) * args.timestep_std
         )
 
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __call__(self, x: Float[Array, "B"]) -> Float[Array, "B D"]:
+    def __call__(self, x: Float[Array, ""]) -> Float[Array, " D"]:
         f = 2 * jnp.pi * x @ self.weight.T
         return jnp.concatenate([f.cos(), f.sin()], dim=-1)
 
@@ -44,9 +43,7 @@ class FourierFeatures(nnx.Module):
 # TODO: move to a generic library
 class GLU(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(
-        self, in_features: int, out_features: int, rngs: nnx.Rngs, use_bias: bool = True
-    ) -> None:
+    def __init__(self, in_features: int, out_features: int, rngs: nnx.Rngs, use_bias: bool = True) -> None:
         self.proj = nnx.Linear(
             in_features=in_features,
             out_features=out_features * 2,
@@ -64,9 +61,7 @@ class FeedForward(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
         self.linear_in = GLU(args=args, rngs=rngs)
-        self.linear_out = nnx.Linear(
-            in_features=args.dim, out_features=args.dim, use_bias=True, rngs=rngs
-        )
+        self.linear_out = nnx.Linear(in_features=args.dim, out_features=args.dim, use_bias=True, rngs=rngs)
 
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, x):
@@ -121,15 +116,20 @@ class ContinuousTransformer(nnx.Module):
             rngs=rngs,
         )
 
-        self.rotary_emb = RotaryPositionalEmbedding(args.dim // 2)
-
-        self.layers = [
-            TransformerBlock(args=args, rngs=rngs) for _ in range(args.depth)
-        ]
+        self.layers = [TransformerBlock(args=args, rngs=rngs) for _ in range(args.depth)]
 
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __call__(self, x):
-        pass
+    def __call__(self, x: Float[Array, "x_seq model_dim"], ctx: Float[Array, "ctx_seq model_dim"]):
+        x = self.proj_in(x)
+
+        # TODO: rotary emb, cached?
+
+        for layer in self.layers:
+            x = layer(x=x, ctx=ctx)
+
+        x = self.proj_out(x)
+
+        return x
 
 
 class DiT(nnx.Module):
@@ -153,9 +153,7 @@ class DiT(nnx.Module):
             use_bias=True,
             rngs=rngs,
         )
-        self.time_proj_2 = nnx.Linear(
-            in_features=args.dim, out_features=args.dim, use_bias=True, rngs=rngs
-        )
+        self.time_proj_2 = nnx.Linear(in_features=args.dim, out_features=args.dim, use_bias=True, rngs=rngs)
 
         # global cond projections
         self.global_proj_1 = nnx.Linear(
@@ -182,9 +180,21 @@ class DiT(nnx.Module):
         self.transformer = ContinuousTransformer(args, rngs=rngs)
 
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __call__(self, x, t, c, g):
+    def __call__(
+        self,
+        x: Float[Array, "x_chan x_dim"],
+        t: Float[Array, " 1"],
+        g: Float[Array, " global_dim"],
+        ctx: Float[Array, "ctx_seq ctx_dim"],
+    ):
+        """
+        The Stable Audio 1.0 DiT
+
+        - Doesn't have any prepend cond but DOES apply global cond as a prepend.
+        - Uses cross attention for the prompt
+        """
         # patch x
-        x = self.patch(x)
+        x = self.patch(x) + x
 
         # project timesteps
         t = self.to_timestep(t)
@@ -192,15 +202,23 @@ class DiT(nnx.Module):
         t = nnx.silu(t)
         t = self.time_proj_2(t)
 
-        # project context
-        ctx = self.context_proj_1(ctx)
-        ctx = nnx.silu(ctx)
-        ctx = self.context_proj_2(ctx)
-
         # project global cond
         g = self.global_proj_1(g)
         g = nnx.silu(g)
         g = self.global_proj_2(g)
 
+        # project context
+        ctx = self.context_proj_1(ctx)
+        ctx = nnx.silu(ctx)
+        ctx = self.context_proj_2(ctx)
+
+        # combine global and timestep, add extra dimension
+        g = jnp.expand_dims(g + t, axis=1)
+
+        # combine g and x
+        x = jnp.concat([g, x], axis=1)
+
         # oh yeah, attend it ;)
-        
+        out = self.transformer(x=x, ctx=ctx)
+
+        return out
