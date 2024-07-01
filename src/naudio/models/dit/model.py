@@ -17,7 +17,6 @@ class ModelArgs:
     heads: int
     patch: int
     channels: int
-    time_dim: int
     context_dim: int
     timestep_dim: int
     timestep_std: float = 1.0
@@ -60,8 +59,10 @@ class GLU(nnx.Module):
 class FeedForward(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
-        self.linear_in = GLU(args=args, rngs=rngs)
-        self.linear_out = nnx.Linear(in_features=args.dim, out_features=args.dim, use_bias=True, rngs=rngs)
+        self.linear_in = GLU(in_features=args.dim, out_features=args.dim * 4, rngs=rngs)
+        self.linear_out = nnx.Linear(
+            in_features=args.dim * 4, out_features=args.dim, use_bias=True, rngs=rngs
+        )
 
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, x):
@@ -159,6 +160,7 @@ class DiT(nnx.Module):
             out_features=args.channels,
             kernel_size=1,
             strides=1,
+            rngs=rngs,
         )
 
         # timestep and projections
@@ -242,3 +244,6 @@ class DiT(nnx.Module):
 
 if __name__ == "__main__":
     print("starting init test")
+    args = ModelArgs(dim=512, depth=2, heads=64, patch=2, channels=32, context_dim=768, timestep_dim=1024)
+    rngs = nnx.Rngs(0)
+    model = DiT(args=args, rngs=rngs)
