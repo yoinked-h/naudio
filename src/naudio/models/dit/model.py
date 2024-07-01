@@ -71,33 +71,49 @@ class FeedForward(nnx.Module):
         return x
 
 
+class Attention(nnx.Module):
+    @jaxtyped(typechecker=TYPE_CHECKER)
+    def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
+        self.to_q = nnx.Linear(in_features=args.dim, out_features=args.dim, rngs=rngs)
+        self.to_k = nnx.Linear(in_features=args.context_dim, out_features=args.dim, rngs=rngs)
+        self.to_v = nnx.Linear(in_features=args.context_dim, out_features=args.dim, rngs=rngs)
+
+    @jaxtyped(typechecker=TYPE_CHECKER)
+    def __call__(self, q, k, v):
+        # projections
+        q = self.to_q(q)
+        k = self.to_k(k)
+        v = self.to_v(v)
+
+        # TODO: rotary embeddings
+
+        return nnx.dot_product_attention(q, k, v)
+
+
 class TransformerBlock(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
         self.pre_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
+        self.ctx_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
 
-        self.attn = nnx.MultiHeadAttention(
-            num_heads=args.heads,
-            in_features=args.dim,
-            out_features=args.dim,
-            decode=False,
-            normalize_qk=False,
-            rngs=rngs,
-        )
+        self.self_attn = Attention(args=args, rngs=rngs)
+        self.ctx_attn = Attention(args=args, rngs=rngs)
 
         self.ff_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
         self.ff = FeedForward(args=args, rngs=rngs)
 
-        self.global_proj = nnx.Linear(
-            in_features=args.dim,
-            out_features=args.dim * 6,
-            use_bias=False,
-            rngs=rngs,
-        )
-
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __call__(self, x):
-        pass
+    def __call__(self, x, ctx):
+        # self attention
+        pre_norm_x = self.pre_norm(x)
+        x = x + self.attn(q=pre_norm_x, k=pre_norm_x, v=pre_norm_x)
+        # cross attention
+        ctx_norm_x = self.ctx_norm(x)
+        x = x + self.ctx_attn(q=x, k=ctx_norm_x, v=ctx_norm_x)
+        # feed forward norm & projection
+        x = x + self.ff(self.ff_norm(x))
+
+        return x
 
 
 class ContinuousTransformer(nnx.Module):
@@ -222,3 +238,7 @@ class DiT(nnx.Module):
         out = self.transformer(x=x, ctx=ctx)
 
         return out
+
+
+if __name__ == "__main__":
+    print("starting init test")
