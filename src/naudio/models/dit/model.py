@@ -55,8 +55,8 @@ class GLU(nnx.Module):
         )
 
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __call__(self, x: Float[Array, "B N D"]) -> Float[Array, "B N D"]:
-        x, gate = unstack(self.proj(x), axis=-1)
+    def __call__(self, x: Float[Array, "tokens in_dim"]) -> Float[Array, "tokens out_dim"]:
+        x, gate = jnp.split(self.proj(x), indices_or_sections=2, axis=-1)
         return x + nnx.silu(gate)
 
 
@@ -111,7 +111,7 @@ class TransformerBlock(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
         self.pre_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
-        self.ctx_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
+        self.ctx_norm = nnx.LayerNorm(num_features=args.context_dim, rngs=rngs)
 
         self.self_attn = Attention(
             q_in_features=args.dim,
@@ -138,7 +138,6 @@ class TransformerBlock(nnx.Module):
         # self attention
         pre_norm_x = self.pre_norm(x)
         x = x + self.self_attn(q=pre_norm_x, k=pre_norm_x, v=pre_norm_x)
-        breakpoint()
         # cross attention
         ctx_norm_x = self.ctx_norm(ctx)
         x = x + self.ctx_attn(q=x, k=ctx_norm_x, v=ctx_norm_x)
@@ -258,15 +257,24 @@ class DiT(nnx.Module):
 
 if __name__ == "__main__":
     print("starting init test")
-    args = ModelArgs(dim=1536, depth=2, heads=24, patch=2, channels=64, context_dim=768)
+    DMODEL = 256
+    DEPTH = 2
+    HEADS = 16
+    PATCH = 1
+    CHANNELS = 16
+    CONTEXT_DIM = 128
+    NTOKENS = 77
+    args = ModelArgs(
+        dim=DMODEL, depth=DEPTH, heads=HEADS, patch=PATCH, channels=CHANNELS, context_dim=CONTEXT_DIM
+    )
     rngs = nnx.Rngs(0)
     model = DiT(args=args, rngs=rngs)
 
     key = jax.random.PRNGKey(0)
 
     t = jax.random.normal(key=key, shape=(1,))
-    x = jax.random.normal(key=key, shape=(1024, 64))  # jax does N H C vs torch where its NCH
-    ctx = jax.random.normal(key=key, shape=(130, 768))
-    g = jax.random.normal(key=key, shape=(1536,))
+    x = jax.random.normal(key=key, shape=(NTOKENS, CHANNELS))  # jax does N H C vs torch where its NCH
+    ctx = jax.random.normal(key=key, shape=(NTOKENS, CONTEXT_DIM))
+    g = jax.random.normal(key=key, shape=(DMODEL,))
 
     model(x=x, t=t, g=g, ctx=ctx)
