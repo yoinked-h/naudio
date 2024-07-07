@@ -4,6 +4,7 @@ import jax
 from jax import lax
 import jax.numpy as jnp
 from beartype import beartype
+from einops import rearrange
 from flax import nnx
 from jaxtyping import Array, Float, jaxtyped
 
@@ -18,7 +19,7 @@ class ModelArgs:
     patch: int
     channels: int
     context_dim: int
-    timestep_dim: int
+    timestep_dim: int = 256
     timestep_std: float = 1.0
 
 
@@ -29,14 +30,17 @@ def unstack(x, axis=0):
 class FourierFeatures(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
-        self.weight = nnx.Param(
-            jax.random.uniform(rngs.params(), (args.timestep_dim // 2, 1)) * args.timestep_std
+        self.weight = nnx.Linear(
+            in_features=1,
+            out_features=args.timestep_dim // 2,
+            rngs=rngs,
+            use_bias=False,
         )
 
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __call__(self, x: Float[Array, ""]) -> Float[Array, " D"]:
-        f = 2 * jnp.pi * x @ self.weight.T
-        return jnp.concatenate([f.cos(), f.sin()], dim=-1)
+    def __call__(self, x: Float[Array, " 1"]) -> Float[Array, " timestep_dim"]:
+        f = 2 * jnp.pi * self.weight(x)
+        return jnp.concatenate([jnp.cos(f), jnp.sin(f)], axis=-1)
 
 
 # TODO: move to a generic library
@@ -72,12 +76,16 @@ class FeedForward(nnx.Module):
         return x
 
 
+# TODO: make generic
 class Attention(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
-        self.to_q = nnx.Linear(in_features=args.dim, out_features=args.dim, rngs=rngs)
-        self.to_k = nnx.Linear(in_features=args.context_dim, out_features=args.dim, rngs=rngs)
-        self.to_v = nnx.Linear(in_features=args.context_dim, out_features=args.dim, rngs=rngs)
+    def __init__(
+        self, q_in_features, k_in_features, v_in_features, d_model, num_heads, rngs: nnx.Rngs
+    ) -> None:
+        self.num_heads = num_heads
+        self.to_q = nnx.Linear(in_features=q_in_features, out_features=d_model, rngs=rngs)
+        self.to_k = nnx.Linear(in_features=k_in_features, out_features=d_model, rngs=rngs)
+        self.to_v = nnx.Linear(in_features=v_in_features, out_features=d_model, rngs=rngs)
 
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, q, k, v):
@@ -86,9 +94,17 @@ class Attention(nnx.Module):
         k = self.to_k(k)
         v = self.to_v(v)
 
+        # reshape
+        q = rearrange(q, "tokens (heads head_dim) -> tokens heads head_dim", heads=self.num_heads)
+        k = rearrange(k, "tokens (heads head_dim) -> tokens heads head_dim", heads=self.num_heads)
+        v = rearrange(v, "tokens (heads head_dim) -> tokens heads head_dim", heads=self.num_heads)
+
         # TODO: rotary embeddings
 
-        return nnx.dot_product_attention(q, k, v)
+        attn = nnx.dot_product_attention(q, k, v)
+        attn = rearrange(attn, "tokens heads head_dim -> tokens (heads head_dim)", heads=self.num_heads)
+
+        return attn
 
 
 class TransformerBlock(nnx.Module):
@@ -97,8 +113,22 @@ class TransformerBlock(nnx.Module):
         self.pre_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
         self.ctx_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
 
-        self.self_attn = Attention(args=args, rngs=rngs)
-        self.ctx_attn = Attention(args=args, rngs=rngs)
+        self.self_attn = Attention(
+            q_in_features=args.dim,
+            k_in_features=args.dim,
+            v_in_features=args.dim,
+            d_model=args.dim,
+            num_heads=args.heads,
+            rngs=rngs,
+        )
+        self.ctx_attn = Attention(
+            q_in_features=args.dim,
+            k_in_features=args.context_dim,
+            v_in_features=args.context_dim,
+            d_model=args.dim,
+            num_heads=args.heads,
+            rngs=rngs,
+        )
 
         self.ff_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
         self.ff = FeedForward(args=args, rngs=rngs)
@@ -107,9 +137,10 @@ class TransformerBlock(nnx.Module):
     def __call__(self, x, ctx):
         # self attention
         pre_norm_x = self.pre_norm(x)
-        x = x + self.attn(q=pre_norm_x, k=pre_norm_x, v=pre_norm_x)
+        x = x + self.self_attn(q=pre_norm_x, k=pre_norm_x, v=pre_norm_x)
+        breakpoint()
         # cross attention
-        ctx_norm_x = self.ctx_norm(x)
+        ctx_norm_x = self.ctx_norm(ctx)
         x = x + self.ctx_attn(q=x, k=ctx_norm_x, v=ctx_norm_x)
         # feed forward norm & projection
         x = x + self.ff(self.ff_norm(x))
@@ -117,51 +148,21 @@ class TransformerBlock(nnx.Module):
         return x
 
 
-class ContinuousTransformer(nnx.Module):
-    @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
-        self.proj_in = nnx.Linear(
-            in_features=args.channels * args.patch,
-            out_features=args.dim,
-            use_bias=False,
-            rngs=rngs,
-        )
-        self.proj_out = nnx.Linear(
-            in_features=args.dim,
-            out_features=args.channels * args.patch,
-            use_bias=False,
-            rngs=rngs,
-        )
-
-        self.layers = [TransformerBlock(args=args, rngs=rngs) for _ in range(args.depth)]
-
-    @jaxtyped(typechecker=TYPE_CHECKER)
-    def __call__(self, x: Float[Array, "x_seq model_dim"], ctx: Float[Array, "ctx_seq model_dim"]):
-        x = self.proj_in(x)
-
-        # TODO: rotary emb, cached?
-
-        for layer in self.layers:
-            x = layer(x=x, ctx=ctx)
-
-        x = self.proj_out(x)
-
-        return x
-
-
 class DiT(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
-        self.args = ModelArgs
+        self.args = args
 
         # patching conv
-        self.patch = nnx.Conv(
+        self.proj_x_1 = nnx.Conv(
             in_features=args.channels,
             out_features=args.channels,
             kernel_size=1,
             strides=1,
+            use_bias=True,
             rngs=rngs,
         )
+        self.proj_x_2 = nnx.Linear(in_features=args.channels, out_features=args.dim, use_bias=True, rngs=rngs)
 
         # timestep and projections
         self.to_timestep = FourierFeatures(args, rngs)
@@ -195,12 +196,18 @@ class DiT(nnx.Module):
             rngs=rngs,
         )
 
-        self.transformer = ContinuousTransformer(args, rngs=rngs)
+        self.xf_layers = [TransformerBlock(args=args, rngs=rngs) for _ in range(args.depth)]
+        self.xf_proj_out = nnx.Linear(
+            in_features=args.dim,
+            out_features=args.channels * args.patch,
+            use_bias=False,
+            rngs=rngs,
+        )
 
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(
         self,
-        x: Float[Array, "x_chan x_dim"],
+        x: Float[Array, "x_dim x_chan"],
         t: Float[Array, " 1"],
         g: Float[Array, " global_dim"],
         ctx: Float[Array, "ctx_seq ctx_dim"],
@@ -211,8 +218,9 @@ class DiT(nnx.Module):
         - Doesn't have any prepend cond but DOES apply global cond as a prepend.
         - Uses cross attention for the prompt
         """
-        # patch x
-        x = self.patch(x) + x
+        # project x, then transpose
+        x = self.proj_x_1(x) + x
+        x = self.proj_x_2(x)
 
         # project timesteps
         t = self.to_timestep(t)
@@ -231,19 +239,34 @@ class DiT(nnx.Module):
         ctx = self.context_proj_2(ctx)
 
         # combine global and timestep, add extra dimension
-        g = jnp.expand_dims(g + t, axis=1)
+        g = jnp.expand_dims(g + t, axis=0)
 
         # combine g and x
-        x = jnp.concat([g, x], axis=1)
+        x = jnp.concat([g, x], axis=0)
+
+        # TODO: cached rotary embedding
 
         # oh yeah, attend it ;)
-        out = self.transformer(x=x, ctx=ctx)
+        for block in self.xf_layers:
+            x = block(x=x, ctx=ctx)  # TODO: will also need rotary eventually
 
-        return out
+        # final projection
+        x = self.xf_proj_out(x)
+
+        return x
 
 
 if __name__ == "__main__":
     print("starting init test")
-    args = ModelArgs(dim=512, depth=2, heads=64, patch=2, channels=32, context_dim=768, timestep_dim=1024)
+    args = ModelArgs(dim=1536, depth=2, heads=24, patch=2, channels=64, context_dim=768)
     rngs = nnx.Rngs(0)
     model = DiT(args=args, rngs=rngs)
+
+    key = jax.random.PRNGKey(0)
+
+    t = jax.random.normal(key=key, shape=(1,))
+    x = jax.random.normal(key=key, shape=(1024, 64))  # jax does N H C vs torch where its NCH
+    ctx = jax.random.normal(key=key, shape=(130, 768))
+    g = jax.random.normal(key=key, shape=(1536,))
+
+    model(x=x, t=t, g=g, ctx=ctx)
