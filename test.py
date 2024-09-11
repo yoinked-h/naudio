@@ -17,4 +17,4 @@ model = vae.OobleckEncoder(
 x = jnp.ones((1, 2**16, 2))
 print(x)
 x = model(x)
-print(x)
+print(x.shape)

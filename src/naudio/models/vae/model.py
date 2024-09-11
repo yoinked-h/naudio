@@ -134,3 +134,55 @@ class OobleckEncoder(nnx.Module):
         self.layers = nnx.Sequential(*layers)
     def __call__(self, x):
         return self.layers(x)
+
+class OobleckDecoder(nnx.Module):
+    @jaxtyped(typechecker=beartype)
+    def __init__(self, out_features: int, channels: int, latent_dim: int, strides: tuple[int, ...], c_mults: tuple[int, ...], use_snake: bool, antialiasing:bool, use_nearest_upsample: bool, final_tanh: bool, rngs: nnx.Rngs) -> None:
+        c_mults = (1,) + c_mults
+        self.depth = len(c_mults)
+        layers = [
+            nnx.Conv(latent_dim, c_mults[-1]*channels, kernel_size=7, padding=3)
+        ]
+        for i in range(self.depth-1, 0, -1):
+            layers += [
+                DecoderBlock(c_mults[i]*channels,
+                             out_channels=c_mults[i-1]*channels,
+                             stride=strides[i-1],
+                             use_snake=use_snake,
+                             antialiasing=antialiasing,
+                             use_nearest_upsample=use_nearest_upsample,
+                             rngs=rngs
+                             )
+            ]
+        layers += [
+            Snake(c_mults[0] * channels),
+            nnx.Conv(c_mults[0] * channels, out_features, kernel_size=7, padding=3, use_bias=False, rngs=rngs),
+        ]
+        self.layers = nnx.Sequential(*layers)
+        self.use_tanh = final_tanh
+    def __call__(self,x):
+        x = self.layers(x)
+        if self.use_tanh:
+            x = nnx.tanh(x)
+        return x
+
+def vae_sample(mean, scale):
+    stdev = nnx.softplus(scale) + 1e-4
+    var = stdev * stdev
+    lvar = jnp.log(var)
+    latents = jax.random.normal(jax.random.PRNGKey(0x8888), mean.shape) * stdev + mean
+
+    kl = (mean*mean + var - lvar - 1).sum(1).mean()
+
+class VaeBottleneck(nnx.Module):
+    @jaxtyped(typechecker=beartype)
+    def __init__(self):
+        self.is_discrete = False # does this even do anything?
+    def __call__(self, x, return_info=False):
+        mean = self.mean(x)
+        scale = self.scale(x)
+        latents, kl = vae_sample(mean, scale)
+        if return_info:
+            return latents, kl, mean, scale
+        else:
+            return latents
