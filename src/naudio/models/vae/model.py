@@ -30,15 +30,15 @@ class Snake(nnx.Module):
         else:
             self.alpha = nnx.Param(jnp.ones(in_features) * alpha)
             self.beta = nnx.Param(jnp.ones(in_features) * alpha)
+        self.eps = 1e-8
     def __call__(self, x):
-        a = jnp.expand_dims(self.alpha.value, 0)
-        a = jnp.expand_dims(a, -1)
-        b = jnp.expand_dims(self.beta.value, 0)
-        b = jnp.expand_dims(b, -1)
+        a = self.alpha.value
+        b = self.beta.value
         if self.alpha_logscale:
             a = jnp.exp(a)
             b = jnp.exp(b)
-        x = (x + (1.0 / (b + 0.000000001)) * pow(jnp.sin(x * a), 2))
+        b = 1 / (b + self.eps)
+        x = x + b * jnp.square(jnp.sin(a * x)) / a
         return x
 
 class ResidualUnit(nnx.Module):
@@ -93,10 +93,9 @@ class NNUpsampler(nnx.Module):
     def __init__(self, in_features: int, out_features: int, stride:int, rngs:nnx.Rngs):
         self.scale_factor = stride
         self.conv = nnx.Conv(in_features=in_features, out_features=out_features, kernel_size=2*stride,strides=[1],use_bias=False, rngs=rngs)
-    def __call__(self,x):
+    def __call__(self,x: jnp.ndarray):
         #hijacking the image resize for audio, blegh
-        # [batch, channels, length]
-        x = jax.image.resize(x, (x.shape[0], x.shape[1], x.shape[2] * self.scale_factor), "nearest").astype(x.dtype) # blegh...
+        x = jax.image.resize(x, (x.shape[0], x.shape[1] * self.scale_factor, x.shape[2]), "nearest").astype(x.dtype) # blegh...
         x = self.conv(x)
         return x
 class DecoderBlock(nnx.Module):
@@ -132,10 +131,6 @@ class OobleckEncoder(nnx.Module):
             Snake(c_mults[-1] * channels),
             nnx.Conv(in_features=c_mults[-1] * channels, out_features=latent_dim, kernel_size=3, padding=1, rngs=rngs)
         ]
-        # self.layers = layers
         self.layers = nnx.Sequential(*layers)
     def __call__(self, x):
         return self.layers(x)
-
-
-

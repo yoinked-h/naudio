@@ -14,7 +14,7 @@ model = vae.OobleckEncoder(
 
 #test forward pass
 
-x = jnp.ones((1, 1, 2))
+x = jnp.ones((1, 2**16, 2))
 print(x)
 x = model(x)
-print(x.shape)
+print(x)
