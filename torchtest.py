@@ -150,11 +150,12 @@ class DecoderBlock(nn.Module):
                         padding='same')
             )
         else:
+            print(in_channels, out_channels, stride)
             upsample_layer = WNConvTranspose1d(in_channels=in_channels,
                                 out_channels=out_channels,
                                 kernel_size=2*stride, stride=stride, padding=math.ceil(stride/2))
 
-        self.layers = nn.Sequential(
+        self.layers = (
             get_activation("snake" if use_snake else "elu", channels=in_channels),
             upsample_layer,
             ResidualUnit(in_channels=out_channels, out_channels=out_channels,
@@ -166,7 +167,10 @@ class DecoderBlock(nn.Module):
         )
 
     def forward(self, x):
-        return self.layers(x)
+        for layer in self.layers:
+            x = layer(x)
+            print(x.shape)
+        return x
 
 class OobleckEncoder(nn.Module):
     def __init__(self,
@@ -266,14 +270,9 @@ class AudioOobleckVAE(nn.Module):
         return self.decoder(self.bottleneck.decode(x))
 
 if __name__ == "__main__":
-    model = OobleckEncoder(
-            in_channels=2, 
-            channels=128, 
-            latent_dim=128, 
-            c_mults = [1, 2, 4, 8, 16], 
-            strides = [2, 4, 4, 8, 8],
-            use_snake=True,
+    model = AudioOobleckVAE(
     )
 
     x = torch.randn(1, 2, 2**16)
-    print(model(x).shape)
+    print(model.encode(x).shape)
+    print(model.decode(model.encode(x)).shape)

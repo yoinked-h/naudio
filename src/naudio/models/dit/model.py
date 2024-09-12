@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-
+from ..activations import GLU
 import jax
 from jax import lax
 import jax.numpy as jnp
@@ -41,24 +41,6 @@ class FourierFeatures(nnx.Module):
     def __call__(self, x: Float[Array, " 1"]) -> Float[Array, " timestep_dim"]:
         f = 2 * jnp.pi * self.weight(x)
         return jnp.concatenate([jnp.cos(f), jnp.sin(f)], axis=-1)
-
-
-# TODO: move to a generic library
-class GLU(nnx.Module):
-    @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(self, in_features: int, out_features: int, rngs: nnx.Rngs, use_bias: bool = True) -> None:
-        self.proj = nnx.Linear(
-            in_features=in_features,
-            out_features=out_features * 2,
-            use_bias=use_bias,
-            rngs=rngs,
-        )
-
-    @jaxtyped(typechecker=TYPE_CHECKER)
-    def __call__(self, x: Float[Array, "tokens in_dim"]) -> Float[Array, "tokens out_dim"]:
-        x, gate = jnp.split(self.proj(x), indices_or_sections=2, axis=-1)
-        return x + nnx.silu(gate)
-
 
 class FeedForward(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
