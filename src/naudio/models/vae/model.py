@@ -8,6 +8,9 @@ from jaxtyping import Array, Float, jaxtyped
 
 TYPE_CHECKER = beartype
 
+def torchfix(n, k, d=1):
+    return d*(k-1)-n
+
 class ResidualUnit(nnx.Module):
     @jaxtyped(typechecker=beartype)
     def __init__(self, in_features: int, out_features: int, dilation: int, use_snake: bool, rngs: nnx.Rngs) -> None:
@@ -64,7 +67,7 @@ class DecoderBlock(nnx.Module):
         if use_nearest_neighbor:
             upsampler = NNUpsampler(in_features, out_features, stride, rngs)
         else:
-            upsampler = nnx.ConvTranspose(in_features=in_features, out_features=out_features, kernel_size=2*stride, strides=stride, padding=math.ceil(stride/2), rngs=rngs)
+            upsampler = nnx.ConvTranspose(in_features=in_features, out_features=out_features, kernel_size=2*stride, strides=stride, padding=torchfix(math.ceil(stride/2),2*stride), rngs=rngs)
         self.layers = nnx.Sequential(
             get_activation('snake' if use_snake else 'elu', in_features),
             upsampler,
