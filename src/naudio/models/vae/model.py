@@ -4,11 +4,12 @@ import jax, math
 import jax.numpy as jnp
 from beartype import beartype
 from flax import nnx
-from jaxtyping import Array, Float, jaxtyped
+from jaxtyping import Array, jaxtyped
 
 TYPE_CHECKER = beartype
 
 def torchfix(n, k, d=1):
+    # return n # a
     return d*(k-1)-n
 
 class ResidualUnit(nnx.Module):
@@ -179,6 +180,7 @@ class VaeArgs:
     features: int
     channels: int
     latent_dim: int
+    decoder_latent_dim: int
     c_mults: tuple[int, ...]
     strides: tuple[int, ...]
     use_snake: bool = True
@@ -199,7 +201,7 @@ class AudioOobleckVae(nnx.Module):
         decargs = DecoderArgs(
             out_features=VaeArgs.features,
             channels=VaeArgs.channels,
-            latent_dim=VaeArgs.latent_dim,
+            latent_dim=VaeArgs.decoder_latent_dim,
             c_mults=VaeArgs.c_mults,
             strides=VaeArgs.strides,
             use_snake=VaeArgs.use_snake,
@@ -211,8 +213,8 @@ class AudioOobleckVae(nnx.Module):
         self.bottleneck = VaeBottleneck()
     @jaxtyped(typechecker=beartype)
     def encode(self, x) -> Array:
-        # x = self.bottleneck.encode(self.encoder(x)) # this is Bad:tm:
-        x = self.encoder(x)
+        x = self.bottleneck.encode(self.encoder(x)) # this is Bad:tm:
+        # x = self.encoder(x)
         return x
     @jaxtyped(typechecker=beartype)
     def decode(self, x) -> Array:
@@ -224,6 +226,7 @@ if __name__ == '__main__':
         features=2,
         channels=128,
         latent_dim=128,
+        decoder_latent_dim=64,
         c_mults = (1, 2, 4, 8, 16),
         strides = (2, 4, 4, 8, 8),
         use_snake=True
@@ -231,7 +234,7 @@ if __name__ == '__main__':
     rngs = nnx.Rngs(0x7e57)
     model = AudioOobleckVae(args, rngs)
 
-    x = jnp.ones((1, 2**16, 2)) # Batch, Samples/Length, Channels
+    x = jnp.ones((2**16, 2)) # Batch, Samples/Length, Channels
     print(x.shape)
     enc = model.encode(x)
     print(enc.shape)

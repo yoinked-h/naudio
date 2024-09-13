@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from ..activations import GLU
+from naudio.models.activations import GLU
 import jax
 from jax import lax
 import jax.numpy as jnp
@@ -259,4 +259,4 @@ if __name__ == "__main__":
     ctx = jax.random.normal(key=key, shape=(NTOKENS, CONTEXT_DIM))
     g = jax.random.normal(key=key, shape=(DMODEL,))
 
-    model(x=x, t=t, g=g, ctx=ctx)
+    print(model(x=x, t=t, g=g, ctx=ctx).shape)
