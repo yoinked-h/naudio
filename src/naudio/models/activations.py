@@ -48,7 +48,7 @@ def get_activation(activation: Literal["elu", "snake", "relu"], channels: int) -
     elif activation == "elu":
         return ELU()
     elif activation == "relu":
-        return ReLU() # never used but lol
+        return ReLU() 
     else:
         raise ValueError(f"Activation {activation} not supported")
 
