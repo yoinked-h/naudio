@@ -196,4 +196,4 @@ if __name__ == "__main__":
     x = jnp.ones((1, 128), dtype=jnp.int32)
     print(x.shape)
     x = model(x)
-    print(x.shape, x.dtype)
+    print(x.shape)
