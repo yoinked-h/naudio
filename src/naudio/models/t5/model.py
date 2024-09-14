@@ -4,62 +4,81 @@ from beartype import beartype
 from flax import nnx
 from jaxtyping import Array, Float, jaxtyped
 from naudio.models.activations import ReLU
-
+# most of the t5 attn code is borrowed from comfyui's implementation
 class T5Attention(nnx.Module):
-    def __init__(self, d_model, num_heads, max_distance=128, rngs: nnx.Rngs|None = None) -> None:
+    def __init__(self, d_model, num_heads, rel_attn_bias:bool=True, rngs: nnx.Rngs|None = None) -> None:
         if rngs is None:
             raise ValueError("rngs must not be None")
-        self.num_heads = num_heads
-        self.d_head = d_model // num_heads
-        self.qkv_proj = nnx.Linear(d_model, 3 * d_model, use_bias=False, rngs=rngs)
-        self.out_proj = nnx.Linear(d_model, d_model, use_bias=False, rngs=rngs)
-        
-        # Relative position embeddings
-        self.relative_attention_bias = nnx.Embed(max_distance, num_heads, rngs=rngs)
-
-    def __call__(self, x, mask=None):
-        if len(x.shape) == 3:
-            batch_size, seq_len, _ = x.shape
+        self.toq = nnx.Linear(d_model, d_model, use_bias=False, rngs=rngs)
+        self.tok = nnx.Linear(d_model, d_model, use_bias=False, rngs=rngs)
+        self.tov = nnx.Linear(d_model, d_model, use_bias=False, rngs=rngs)
+        self.too = nnx.Linear(d_model, d_model, use_bias=False, rngs=rngs)
+        self.n_heads = num_heads
+        if rel_attn_bias:
+            self.relattnbias_n_buckets = 32
+            self.relattnbias_max_distance = 128
+            self.relattnbias = nnx.Embed(self.relattnbias_n_buckets, self.n_heads, rngs=rngs)
         else:
-            batch_size = 1 # fallback
-            seq_len = x.shape[0]
-        # Single projection for Q, K, V
-        qkv = self.qkv_proj(x)
-        q, k, v = jnp.split(qkv, 3, axis=-1)
-        nnx.dot_product_attention(q, k, v, )
-        # Reshape to (batch, seq_len, num_heads, d_head)
-        q = q.reshape(seq_len, self.num_heads, self.d_head)
-        k = k.reshape(seq_len, self.num_heads, self.d_head)
-        v = v.reshape(seq_len, self.num_heads, self.d_head)
+            self.relattnbias = None
+    @staticmethod
+    def _rel_pos_buckets(rel_pos, n_buckets=32, max_distance=128):
+        rel_buckets = 0
+        n_buckets //= 2
+        rel_buckets += (rel_pos > 0) * n_buckets
+        rel_pos = jnp.abs(rel_pos)
+        max_exact = n_buckets // 2
+        is_small = rel_pos < max_exact
+        rel_pos_if_large = max_exact + (
+            jnp.log(rel_pos / max_exact)
+            / jnp.log(max_distance / max_exact)
+            * (n_buckets - max_exact)
+        )
+        rel_pos_if_large = jnp.minimum(rel_pos_if_large, jnp.full_like(rel_pos_if_large, n_buckets - 1))
+        rel_buckets += jnp.where(is_small, rel_pos, rel_pos_if_large)
+        return rel_buckets
+    
+    def compute_bias(self, q_len, k_len):
+        assert self.relattnbias
+        ctx_pos = jnp.arange(q_len)[:, None]
+        mem_pos = jnp.arange(k_len)[None, :]
+        rel_pos = mem_pos - ctx_pos 
+        rel_pos_bucket = self._rel_pos_buckets(rel_pos, self.relattnbias_n_buckets, self.relattnbias_max_distance)
+        vals = self.relattnbias(rel_pos_bucket)
+        return vals
+    def __call__(self, x, mask=None):
+        q = self.toq(x)
+        k = self.tok(x)
+        v = self.tov(x)
+        bias = None
+        if self.relattnbias is not None:
+            bias = self.compute_bias(x.shape[1], x.shape[1])
+        if bias is not None:
+            if mask is not None:
+                mask = mask + bias
+            else:
+                mask = bias
+        out = nnx.dot_product_attention(q, k * ((k.shape[-1] / self.n_heads) ** 0.5), v, mask=mask)
+        out = (
+            out.transpose(1,2).reshape(q.shape[0], -1, self.n_heads * q.shape[-1])
+        )
+        return self.too(out), bias
 
-        # Add relative position bias
-        position_bias = self._compute_bias(seq_len)
-        attn = nnx.dot_product_attention(q, k, v, bias=position_bias, mask=mask)
-
-        
-        attn = jax.nn.softmax(attn, axis=-1)
-
-        attn_output = jnp.einsum('bhqk,bkhd->bqhd', attn, v)
-        attn_output = attn_output.reshape(batch_size, seq_len, -1)
-        return self.out_proj(attn_output)
-
-    def _compute_bias(self, seq_len):
-        context_position = jnp.arange(seq_len)[:, None]
-        memory_position = jnp.arange(seq_len)[None, :]
-        relative_position = memory_position - context_position
-        relative_position_bucket = self._relative_position_bucket(relative_position)
-        return self.relative_attention_bias(relative_position_bucket)
-
-    def _relative_position_bucket(self, relative_position, max_distance=128):
-        # Implement bucketing logic here
-        # This is a simplified version and might need to be adjusted
-        return jnp.clip(jnp.abs(relative_position), 0, max_distance - 1)
-
+class T5SelfAttention(nnx.Module):
+    def __init__(self, d_model, num_heads, rel_attn_bias:bool=True, rngs: nnx.Rngs|None = None) -> None:
+        if rngs is None:
+            raise ValueError("rngs must not be None")
+        self.self_attn = T5Attention(d_model, num_heads, rel_attn_bias, rngs=rngs)
+        self.ln = nnx.LayerNorm(d_model, rngs=rngs)
+    
+    def __call__(self, x, mask=None):
+        normed = self.ln(x)
+        attn_output, bias = self.self_attn(normed, mask=mask)
+        return x + attn_output, bias
 class T5EncoderLayer(nnx.Module):
     def __init__(self, d_model, d_ff, num_heads, dropout_rate, rngs: nnx.Rngs|None = None) -> None:
         if rngs is None:
             raise ValueError("rngs must not be None")
-        self.self_attn = T5Attention(d_model, num_heads, rngs=rngs)
+        self.self_attn = T5SelfAttention(d_model, num_heads, rngs=rngs)
         self.ff = nnx.Sequential(
             nnx.Linear(d_model, d_ff, rngs=rngs),
             ReLU(),
