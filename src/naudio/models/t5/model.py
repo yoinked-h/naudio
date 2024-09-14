@@ -1,24 +1,121 @@
 import jax
 import jax.numpy as jnp
 from beartype import beartype
+from dataclasses import dataclass
 from flax import nnx
 from jaxtyping import Array, Float, jaxtyped
 from naudio.models.activations import ReLU
+@dataclass
+class T5Config:
+    d_model: int
+    d_ff: int
+    num_heads: int
+    layer_norm_epsilon: float = 1e-6
+    num_layers: int = 6
+    vocab_size: int = 32128
+    relative_attention_num_buckets: int = 32
+    relative_attention_max_distance: int = 128
+class T5LayerNorm(nnx.Module):
+    epsilon: float = 1e-6
+    def __init__(self, config, rngs:nnx.Rngs):
+        self.epsilon = config.layer_norm_epsilon
+        self.weight = nnx.Param(
+            jnp.ones(config.d_model), name="weight", rngs=rngs
+        )
+    def __call__(self, x):
+        variance = jnp.mean(jnp.square(x), axis=-1, keepdims=True)
+        x = x * jax.lax.rsqrt(variance + self.epsilon)
+        return x * self.weight.value
 
+class T5DenseActDense(nnx.Module):
+    def __init__(self, config, rngs:nnx.Rngs):
+        self.config = config
+        self.wi = nnx.Linear(config.d_model, config.d_ff, use_bias=False, rngs=rngs)
+        self.wo = nnx.Linear(config.d_ff, config.d_model, use_bias=False, rngs=rngs)
+        self.act = ReLU()
+    def __call__(self, x):
 
-class T5SelfAttention(nnx.Module):
-    def __init__(self, d_model, num_heads, rel_attn_bias:bool=True, rngs: nnx.Rngs|None = None) -> None:
-        if rngs is None:
-            raise ValueError("rngs must not be None")
-        self.n_heads = num_heads
-        self.d_model = d_model
-        self.self_attn = nnx.MultiHeadAttention(num_heads=num_heads, in_features=d_model, out_features=d_model, qkv_features=d_model, use_bias=rel_attn_bias, decode=False, rngs=rngs)
-        self.ln = nnx.LayerNorm(d_model, rngs=rngs)
-        val = jnp.ones((num_heads, 12)) #todo, make the init random
-        self.relative_attn_bias = nnx.Param(value=val)
-            
+        h = self.wi(x)
+        h = self.act(h)
+        h = self.wo(h)
+        return h
+
+class T5LayerFF(nnx.Module):
+    def __init__(self, config, rngs:nnx.Rngs):
+        self.config = config
+        self.t5ln = T5LayerNorm(config, rngs)
+        self.dense = T5DenseActDense(config, rngs)
+    def __call__(self, x):
+
+        y = self.t5ln(x)
+        y = self.dense(y)
+        return x + y
+
+class T5Attention(nnx.Module):
+    
+    def __init__(self, config, rngs:nnx.Rngs):
+        
+        self.config = config
+        # todo        
+        self.toq = nnx.Linear(config.d_model, config.d_model, use_bias=False, rngs=rngs)
+        self.tok = nnx.Linear(config.d_model, config.d_model, use_bias=False, rngs=rngs)
+        self.tov = nnx.Linear(config.d_model, config.d_model, use_bias=False, rngs=rngs)
+        self.too = nnx.Linear(config.d_model, config.d_model, use_bias=False, rngs=rngs)
+        
+        self.relattnbias = nnx.Embed(config.relative_attention_num_buckets, config.num_heads, rngs=rngs)
+    def __call__(self, hidden_states, mask=None):
+        num_heads = self.config.num_heads
+        d_kv = self.config.d_model // num_heads
+
+        # Linear layers for query, key, and value
+        q = self.toq(hidden_states)
+        k = self.tok(hidden_states)
+        v = self.tov(hidden_states)
+        # Reshape heads
+        batch_size, seq_length = hidden_states.shape[:2]
+        q = q.reshape(batch_size, seq_length, num_heads, d_kv).transpose(0, 2, 1, 3)
+        k = k.reshape(batch_size, seq_length, num_heads, d_kv).transpose(0, 2, 1, 3)
+        v = v.reshape(batch_size, seq_length, num_heads, d_kv).transpose(0, 2, 1, 3)
+
+        # Compute attention scores
+        scores = jnp.matmul(q, k.transpose(0, 1, 3, 2)) / jnp.sqrt(d_kv)
+        scores += self.compute_bias(seq_length, seq_length)
+        # Apply attention mask if provided
+        if mask is not None:
+            scores = jnp.where(mask[:, None, None, :] == 0, -1e9, scores)
+
+        # Compute attention probabilities
+        attn_weights = jax.nn.softmax(scores, axis=-1)
+
+        # Apply attention to values
+        context = jnp.matmul(attn_weights, v)
+
+        # Reshape output
+        context = context.transpose(0, 2, 1, 3).reshape(batch_size, seq_length, self.config.d_model)
+
+        # Final linear layer
+        output = self.too(context)
+
+        return output, attn_weights
+    def compute_bias(self, query_length, key_length):
+        num_buckets = self.config.relative_attention_num_buckets
+        max_distance = self.config.relative_attention_max_distance
+        context_position = jnp.arange(query_length)[:, None]
+        memory_position = jnp.arange(key_length)[None, :]
+        relative_position = memory_position - context_position
+        relative_position_bucket = self._relative_position_bucket(
+            relative_position,
+            bidirectional=True,
+            num_buckets=num_buckets,
+            max_distance=max_distance
+        ).astype(jnp.int32)
+        
+        values = self.relattnbias(relative_position_bucket)
+        values = values.transpose((2, 0, 1))[None, :, :, :]  # Shape: [1, num_heads, query_length, key_length]
+        return values
+
     @staticmethod
-    def _rel_pos_bucket(relative_position, bidirectional=True, num_buckets=12, max_distance=128):
+    def _relative_position_bucket(relative_position, bidirectional=True, num_buckets=32, max_distance=128):
         ret = 0
         n = -relative_position
         if bidirectional:
@@ -27,79 +124,76 @@ class T5SelfAttention(nnx.Module):
             n = jnp.abs(n)
         else:
             n = jnp.maximum(n, 0)
+        
         max_exact = num_buckets // 2
         is_small = n < max_exact
+        
         val_if_large = max_exact + (
-            jnp.log(
-                n.astype(jnp.float32) / max_exact +
-                jnp.finfo(jnp.float32).eps) /
-            jnp.log(max_distance / max_exact) *
-            (num_buckets - max_exact)).astype(jnp.int32)
+            jnp.log(n.astype(jnp.float32) / max_exact) / jnp.log(max_distance / max_exact) * (num_buckets - max_exact)
+        ).astype(jnp.int32)
         val_if_large = jnp.minimum(val_if_large, num_buckets - 1)
+        
         ret += jnp.where(is_small, n, val_if_large)
         return ret
-    def calc_relative_position(self, query_length, key_length):
+
+
+class T5LayerSelfAttention(nnx.Module):
+    def __init__(self, config, rngs:nnx.Rngs):
+        self.config = config
+        self.t5ln = T5LayerNorm(config, rngs)
+        self.attention = T5Attention(config,  rngs)
+    def __call__(self, x, mask=None):
+
+        y = self.t5ln(x)
+        y, _ = self.attention(y, mask)
         
-        # archaic code from linen
+        return x + y
+
+class T5Block(nnx.Module):
+    def __init__(self, config, rngs:nnx.Rngs):
+        self.config = config
+        self.attention = T5LayerSelfAttention(config, rngs)
+        self.ff = T5LayerFF(config, rngs)
+    def __call__(self, x, mask=None):
         
-        context_position = jnp.arange(query_length, dtype=jnp.int32)[:, None]
-        memory_position = jnp.arange(key_length, dtype=jnp.int32)[None, :]
-        relative_position = memory_position - context_position  
-        rp_bucket = self._rel_pos_bucket(relative_position)
-        ohot = jax.nn.one_hot(rp_bucket, self.relative_attn_bias.shape[-1])
-        out = jnp.matmul(ohot, self.relative_attn_bias.value)  
+        x = self.attention(x, mask)
+        x = self.ff(x)
+        return x
 
-        return out
+class T5Stack(nnx.Module):
+    def __init__(self, config, rngs:nnx.Rngs):
+        self.config = config
+        self.t5ln = T5LayerNorm(config, rngs)
+        self.blocks = [T5Block(config, rngs) for _ in range(config.num_layers)]
     def __call__(self, x, mask=None):
-        normed = self.ln(x)
-        # bias = self.calc_relative_position(x.shape[1], x.shape[1])
-        attn_output = self.self_attn(normed, mask=mask)
-        # attn_output = attn_output + bias
-        return x + attn_output
-class T5EncoderLayer(nnx.Module):
-    def __init__(self, d_model, d_ff, num_heads, dropout_rate, rngs: nnx.Rngs|None = None) -> None:
-        if rngs is None:
-            raise ValueError("rngs must not be None")
-        self.self_attn = T5SelfAttention(d_model, num_heads, rngs=rngs)
-        self.ff = nnx.Sequential(
-            nnx.Linear(d_model, d_ff, rngs=rngs),
-            ReLU(),
-            nnx.Linear(d_ff, d_model, rngs=rngs)
-        )
-        self.layer_norm1 = nnx.LayerNorm(d_model, rngs=rngs)
-        self.layer_norm2 = nnx.LayerNorm(d_model, rngs=rngs)
-        self.dropout = nnx.Dropout(dropout_rate, rngs=rngs)
+        
+        for block in self.blocks:
+            x = block(x, mask)
+        return self.t5ln(x)
 
-    def __call__(self, x, mask=None):
-        attn_output = self.self_attn(x, mask)
-        x = x + self.dropout(attn_output)
-        x = self.layer_norm1(x)
-        ff_output = self.ff(x)
-        x = x + self.dropout(ff_output)
-        return self.layer_norm2(x)
+class T5(nnx.Module):
+    def __init__(self, config, rngs:nnx.Rngs):
+        self.config = config
+        self.embed = nnx.Embed(self.config.vocab_size, self.config.d_model, rngs=rngs)
+        self.encoder = T5Stack(self.config, rngs)
+    def __call__(self, input_ids, attention_mask=None):
+        x = self.embed(input_ids)
+        return self.encoder(x, attention_mask)
 
-class T5Encoder(nnx.Module):
-    def __init__(self, num_layers, d_model, d_ff, num_heads, dropout_rate, rngs: nnx.Rngs|None = None) -> None:
-        if rngs is None:
-            raise ValueError("rngs must not be None")
-        self.layers = [T5EncoderLayer(d_model, d_ff, num_heads, dropout_rate, rngs=rngs) 
-                    for _ in range(num_layers)]
-        self.final_layer_norm = nnx.LayerNorm(d_model, rngs=rngs)
-
-    def __call__(self, x, mask=None):
-        for layer in self.layers:
-            x = layer(x, mask)
-        return self.final_layer_norm(x)
 
 if __name__ == "__main__":
-    print("testing t5")
-    rngs = nnx.Rngs(0x5f16)
-    MODEL_DIM = 768
-    LAYERS = 12
-    HEADS = 12
-    DROPOUT = 0.1
-    enc = T5Encoder(num_layers=LAYERS, d_model=MODEL_DIM, d_ff=MODEL_DIM*3, num_heads=HEADS, dropout_rate=DROPOUT, rngs=rngs)
-    x = jnp.ones((1, 3, MODEL_DIM))
+    config = T5Config(
+        d_model=768,
+        d_ff=3072,
+        num_layers=12,
+        num_heads=12,
+        relative_attention_num_buckets=32,
+        relative_attention_max_distance=128,
+        vocab_size=32128
+    )
+    rngs = nnx.Rngs(0x55b1)
+    model = T5(config, rngs)
+    x = jnp.ones((1, 128), dtype=jnp.int32)
     print(x.shape)
-    enc = enc(x)
-    print(enc.shape)
+    x = model(x)
+    print(x.shape, x.dtype)
