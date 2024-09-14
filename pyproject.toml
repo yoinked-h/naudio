@@ -28,6 +28,7 @@ dependencies = [
   "jaxtyping",
   "beartype",
   "einops",
+  "transformers",
   "tensorboard"
 ]
 

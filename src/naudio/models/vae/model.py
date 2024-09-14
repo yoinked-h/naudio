@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from naudio.models.activations import get_activation
-import jax, math
+import jax
+import math
 import jax.numpy as jnp
 from beartype import beartype
 from flax import nnx

@@ -1,6 +1,5 @@
 import jax.numpy as jnp
 from flax import nnx
-from einops import rearrange
 from vae.model import AudioOobleckVae, VaeArgs
 from dit.model import DiT, ModelArgs
 

@@ -1,9 +1,7 @@
 import jax
 import jax.numpy as jnp
-from beartype import beartype
 from dataclasses import dataclass
 from flax import nnx
-from jaxtyping import Array, Float, jaxtyped
 from naudio.models.activations import ReLU
 @dataclass
 class T5Config:
