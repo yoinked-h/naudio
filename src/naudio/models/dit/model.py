@@ -29,12 +29,13 @@ def unstack(x, axis=0):
 
 class FourierFeatures(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
+    def __init__(self, args: ModelArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         self.weight = nnx.Linear(
             in_features=1,
             out_features=args.timestep_dim // 2,
             rngs=rngs,
             use_bias=False,
+            dtype=dtype
         )
 
     @jaxtyped(typechecker=TYPE_CHECKER)
@@ -44,10 +45,10 @@ class FourierFeatures(nnx.Module):
 
 class FeedForward(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
-        self.linear_in = GLU(in_features=args.dim, out_features=args.dim * 4, rngs=rngs)
+    def __init__(self, args: ModelArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
+        self.linear_in = GLU(in_features=args.dim, out_features=args.dim * 4, rngs=rngs, dtype=dtype)
         self.linear_out = nnx.Linear(
-            in_features=args.dim * 4, out_features=args.dim, use_bias=True, rngs=rngs
+            in_features=args.dim * 4, out_features=args.dim, use_bias=True, rngs=rngs, dtype=dtype
         )
 
     @jaxtyped(typechecker=TYPE_CHECKER)
@@ -62,12 +63,12 @@ class FeedForward(nnx.Module):
 class Attention(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(
-        self, q_in_features, k_in_features, v_in_features, d_model, num_heads, rngs: nnx.Rngs
+        self, q_in_features, k_in_features, v_in_features, d_model, num_heads, rngs: nnx.Rngs, dtype=jnp.float32
     ) -> None:
         self.num_heads = num_heads
-        self.to_q = nnx.Linear(in_features=q_in_features, out_features=d_model, rngs=rngs)
-        self.to_k = nnx.Linear(in_features=k_in_features, out_features=d_model, rngs=rngs)
-        self.to_v = nnx.Linear(in_features=v_in_features, out_features=d_model, rngs=rngs)
+        self.to_q = nnx.Linear(in_features=q_in_features, out_features=d_model, rngs=rngs, dtype=dtype)
+        self.to_k = nnx.Linear(in_features=k_in_features, out_features=d_model, rngs=rngs, dtype=dtype)
+        self.to_v = nnx.Linear(in_features=v_in_features, out_features=d_model, rngs=rngs, dtype=dtype)
 
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, q, k, v):
@@ -91,9 +92,9 @@ class Attention(nnx.Module):
 
 class TransformerBlock(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
-        self.pre_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
-        self.ctx_norm = nnx.LayerNorm(num_features=args.context_dim, rngs=rngs)
+    def __init__(self, args: ModelArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
+        self.pre_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs, dtype=dtype)
+        self.ctx_norm = nnx.LayerNorm(num_features=args.context_dim, rngs=rngs, dtype=dtype)
 
         self.self_attn = Attention(
             q_in_features=args.dim,
@@ -102,6 +103,7 @@ class TransformerBlock(nnx.Module):
             d_model=args.dim,
             num_heads=args.heads,
             rngs=rngs,
+            dtype=dtype
         )
         self.ctx_attn = Attention(
             q_in_features=args.dim,
@@ -110,10 +112,11 @@ class TransformerBlock(nnx.Module):
             d_model=args.dim,
             num_heads=args.heads,
             rngs=rngs,
+            dtype=dtype
         )
 
-        self.ff_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs)
-        self.ff = FeedForward(args=args, rngs=rngs)
+        self.ff_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs, dtype=dtype)
+        self.ff = FeedForward(args=args, rngs=rngs, dtype=dtype)
 
     @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, x, ctx):
@@ -131,7 +134,7 @@ class TransformerBlock(nnx.Module):
 
 class DiT(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(self, args: ModelArgs, rngs: nnx.Rngs) -> None:
+    def __init__(self, args: ModelArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         self.args = args
 
         # patching conv
@@ -142,8 +145,9 @@ class DiT(nnx.Module):
             strides=1,
             use_bias=True,
             rngs=rngs,
+            dtype=dtype
         )
-        self.proj_x_2 = nnx.Linear(in_features=args.channels, out_features=args.dim, use_bias=True, rngs=rngs)
+        self.proj_x_2 = nnx.Linear(in_features=args.channels, out_features=args.dim, use_bias=True, rngs=rngs, dtype=dtype)
 
         # timestep and projections
         self.to_timestep = FourierFeatures(args, rngs)
@@ -152,15 +156,16 @@ class DiT(nnx.Module):
             out_features=args.dim,
             use_bias=True,
             rngs=rngs,
+            dtype=dtype
         )
-        self.time_proj_2 = nnx.Linear(in_features=args.dim, out_features=args.dim, use_bias=True, rngs=rngs)
+        self.time_proj_2 = nnx.Linear(in_features=args.dim, out_features=args.dim, use_bias=True, rngs=rngs, dtype=dtype)
 
         # global cond projections
         self.global_proj_1 = nnx.Linear(
-            in_features=args.dim, out_features=args.dim, use_bias=False, rngs=rngs
+            in_features=args.dim, out_features=args.dim, use_bias=False, rngs=rngs, dtype=dtype
         )
         self.global_proj_2 = nnx.Linear(
-            in_features=args.dim, out_features=args.dim, use_bias=False, rngs=rngs
+            in_features=args.dim, out_features=args.dim, use_bias=False, rngs=rngs, dtype=dtype
         )
 
         # context projections
@@ -169,20 +174,23 @@ class DiT(nnx.Module):
             out_features=args.context_dim,
             use_bias=False,
             rngs=rngs,
+            dtype=dtype
         )
         self.context_proj_2 = nnx.Linear(
             in_features=args.context_dim,
             out_features=args.context_dim,
             use_bias=False,
             rngs=rngs,
+            dtype=dtype
         )
 
-        self.xf_layers = [TransformerBlock(args=args, rngs=rngs) for _ in range(args.depth)]
+        self.xf_layers = [TransformerBlock(args=args, rngs=rngs, dtype=dtype) for _ in range(args.depth)]
         self.xf_proj_out = nnx.Linear(
             in_features=args.dim,
             out_features=args.channels * args.patch,
             use_bias=False,
-            rngs=rngs,
+            rngs=rngs, 
+            dtype=dtype
         )
 
     @jaxtyped(typechecker=TYPE_CHECKER)

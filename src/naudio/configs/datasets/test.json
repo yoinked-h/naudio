@@ -1,0 +1,21 @@
+{
+    "audio_dir": "D:\\code\\zunset\\tod\\",
+    "text_dir": "D:\\code\\zunset\\tod\\",
+    "audio_ext": ".wav",
+    "text_ext": ".gemini.txt",
+    "text_ext_fallback": ".lpmuse.txt",
+    "dataset_enhancements": {
+        "random_crop": {
+            "min_scale": 0.4,
+            "max_scale": 0.8,
+            "chance": 0.1
+        },
+        "caption_dropout": {
+            "min_to_trigger": 10,
+            "chance": 0.05
+        },
+        "normalize_audio": {
+            "chance": 0.02
+        }
+    }
+}

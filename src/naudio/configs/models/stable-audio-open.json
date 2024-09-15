@@ -1,0 +1,31 @@
+{
+    "latent_dim": 64,
+    "audio_channels": 2,
+    "vae": {
+        "channels": 128,
+        "encoder_latent_dim": 128,
+        "c_mults": [1, 2, 4, 8, 16],
+        "strides": [2, 4, 4, 8, 8],
+        "use_snake": true,
+        "use_nearest_neighbor": false,
+        "final_tanh": false,
+        "dtype": "fp32"
+    },
+    "text_encoder": {
+        "model_type": "t5",
+        "model_dim": 768,
+        "ff_dim": 3072,
+        "num_layers": 12,
+        "num_heads": 12,
+        "dropout_rate": 0.1,
+        "vocab_size": 32128,
+        "dtype": "e4m3"
+    },
+    "dit": {
+        "model_dim": 1536,
+        "depth": 24,
+        "heads": 24,
+        "patch": 1,
+        "dtype": "fp16"
+    }
+}

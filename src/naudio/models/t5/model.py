@@ -189,9 +189,11 @@ if __name__ == "__main__":
         relative_attention_max_distance=128,
         vocab_size=32128
     )
+    from naudio.models.t5.tokenizer import T5Tokenizer
+    tkn = T5Tokenizer()
     rngs = nnx.Rngs(0x55b1)
     model = T5(config, rngs)
-    x = jnp.ones((1, 128), dtype=jnp.int32)
+    x = tkn("hello world")
     print(x.shape)
     x = model(x)
     print(x.shape)

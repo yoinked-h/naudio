@@ -235,7 +235,7 @@ if __name__ == '__main__':
     rngs = nnx.Rngs(0x7e57)
     model = AudioOobleckVae(args, rngs)
 
-    x = jnp.ones((2**16, 2)) # Batch, Samples/Length, Channels
+    x = jnp.ones((2**16, 2)).astype('float32') # Batch, Samples/Length, Channels
     print(x.shape)
     enc = model.encode(x)
     print(enc.shape)

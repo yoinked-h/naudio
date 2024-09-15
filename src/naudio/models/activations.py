@@ -55,12 +55,13 @@ def get_activation(activation: Literal["elu", "snake", "relu"], channels: int) -
 
 class GLU(nnx.Module):
     @jaxtyped(typechecker=TYPE_CHECKER)
-    def __init__(self, in_features: int, out_features: int, rngs: nnx.Rngs, use_bias: bool = True) -> None:
+    def __init__(self, in_features: int, out_features: int, rngs: nnx.Rngs, use_bias: bool = True, dtype=jnp.float32) -> None:
         self.proj = nnx.Linear(
             in_features=in_features,
             out_features=out_features * 2,
             use_bias=use_bias,
             rngs=rngs,
+            dtype=dtype
         )
 
     @jaxtyped(typechecker=TYPE_CHECKER)
