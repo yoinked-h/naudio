@@ -17,51 +17,58 @@ def main(model_config_path: Path, dataset_config_path: Path, train_config_path: 
 
     model = StableAudioOpen.from_config_file(model_config_path, rngseed=tcfg["seed"].encode('utf-8').hex())
     model.train() # set train mode
-    match tcfg['training_hparams']["lr_scheduler"]["type"]:
-        case "cosine":
-            lr = optax.schedules.cosine_decay_schedule(tcfg['training_hparams']["lr_scheduler"]["type"], tcfg['training_hparams']["lr_scheduler"]["decay_steps"])
-        case "constant":
-            lr = optax.constant_schedule(tcfg['training_hparams']["lr_scheduler"]["value"])
-        case _:
-            lr = optax.constant_schedule(0.0005)
-    opt = tcfg['training_hparams']["optimizer"]["type"]
-    match opt:
-        case "adam":
-            optimizer = optax.adam(lr, b1=tcfg['training_hparams']["optimizer"]['b1'], b2=tcfg['training_hparams']["optimizer"]['b2'])
-        case "adamw":
-            optimizer = optax.adamw(lr, b1=tcfg['training_hparams']["optimizer"]['b1'], b2=tcfg['training_hparams']["optimizer"]['b2'])
-        case "sgd":
-            optimizer = optax.sgd(lr)
-        case _:
-            print(f"Invalid optimizer: {opt}, using adam")
-            optimizer = optax.adam(lr)
-    optimizer = nnx.Optimizer(model, optimizer)
-    # 2. Define a training step function
+    optimizers = {}
+    for mod in ['vae', 'text_encoder', 'dit']:
+        modcfg = tcfg['training_hparams'][mod]
+        match tcfg['training_hparams']["lr_scheduler"]["type"]:
+            case "cosine":
+                lr = optax.schedules.cosine_decay_schedule(modcfg["lr_scheduler"]["value"], modcfg["lr_scheduler"]["decay_steps"])
+            case "constant":
+                lr = optax.constant_schedule(modcfg["lr_scheduler"]["value"])
+            case _:
+                lr = optax.constant_schedule(0.0005)
+        opt = modcfg["optimizer"]["type"]
+        match opt:
+            case "adam":
+                optimizer = optax.adam(lr, b1=modcfg["optimizer"]['b1'], b2=modcfg["optimizer"]['b2'])
+            case "adamw":
+                optimizer = optax.adamw(lr, b1=modcfg["optimizer"]['b1'], b2=modcfg["optimizer"]['b2'])
+            case "sgd":
+                optimizer = optax.sgd(lr)
+            case _:
+                print(f"Invalid optimizer: {opt}, using adam")
+                optimizer = optax.adam(lr)
+        if mod == 'vae':
+            optimizer = nnx.Optimizer(model.vae, optimizer)
+        elif mod == 'text_encoder':
+            optimizer = nnx.Optimizer(model.tenc, optimizer)
+        elif mod == 'dit':
+            optimizer = nnx.Optimizer(model.dit, optimizer)
+        optimizers[mod] = optimizer
     def mse_loss(y_true, y_pred):
         return jnp.mean((y_true - y_pred) ** 2)
+    
     @jax.jit
-    def train_step(params, opt_state, batch):
-        def loss_fn(params):
-            aud, txt = batch
-            logits = model(params, aud)
-            loss = mse_loss(logits, txt)
+    def t5_train_step(state, batch):
+        def loss_fn(model, inputs, target):
+            output = model.tenc_encode(inputs)
+            loss = mse_loss(target, output)
             return loss
+        inp, tar = batch
+        grads = nnx.grad(loss_fn)(state, inp, tar)
+        state = optimizers['tenc'].update(grads)
+        return state
 
-    # 3. Create a loop to iterate over epochs and batches
-    num_epochs = tcfg["num_epochs"]
-    batch_size = tcfg["batch_size"]
-
-    for epoch in range(num_epochs):
-        for batch_idx in range(0, len(dataset), batch_size):
-            batch = dataset.get(batch_idx, batch_size)
-            model.params, opt_state, loss = train_step(model.params, opt_state, batch)
-
-            # 4. Add logging
-            if batch_idx % tcfg["log_every"] == 0:
-                print(f"Epoch {epoch}, Batch {batch_idx}, Loss: {loss}")
-
-        # Optionally, add validation step here
-
-        # 5. Checkpointing
-        if (epoch + 1) % tcfg["save_every"] == 0:
-            
+    @jax.jit
+    def dit_train_step(state, batch):
+        def loss_fn(model, inputs, target):
+            output = model.dit_encode(inputs)
+            loss = mse_loss(target, output)
+            return loss
+        inp, tar = batch
+        grads = nnx.grad(loss_fn)(state, inp, tar)
+        state = optimizers['dit'].update(grads)
+        return state
+    
+    @jax.jit
+    def vae_train_step(state, batch):

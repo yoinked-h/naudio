@@ -165,13 +165,13 @@ class VaeBottleneck(nnx.Module):
     @jaxtyped(typechecker=beartype)
     def __init__(self):
         self.is_discrete = False # does this even do anything?
-    def encode(self, x: Array) -> Array:
+    def encode(self, x: Array,return_info: bool = False) -> Array:
         info = {}
         mean, scale = jnp.split(x, 2, axis=-1)
         x, kl = vae_sample(mean, scale)
         info['kl'] = kl
-        if False: # return info is never used
-            return x, info
+        if return_info: 
+            return x, info # type: ignore
         else:
             # x = rearrange(x, 'b c t -> b t c')
             return x
@@ -212,9 +212,10 @@ class AudioOobleckVae(nnx.Module):
         self.encoder = OobleckEncoder(encargs, rngs=rngs)
         self.decoder = OobleckDecoder(decargs, rngs=rngs)
         self.bottleneck = VaeBottleneck()
+        self.audio_channels = VaeArgs.features
     @jaxtyped(typechecker=beartype)
-    def encode(self, x) -> Array:
-        x = self.bottleneck.encode(self.encoder(x)) # this is Bad:tm:
+    def encode(self, x, return_info: bool = False) -> Array:
+        x = self.bottleneck.encode(self.encoder(x), return_info=return_info) # this is Bad:tm:
         # x = self.encoder(x)
         return x
     @jaxtyped(typechecker=beartype)

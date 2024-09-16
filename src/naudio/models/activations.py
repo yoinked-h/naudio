@@ -13,12 +13,25 @@ class ELU(nnx.Module):
     def __call__(self, x: Array) -> Array:
         return nnx.elu(x)
 
+class SiLU(nnx.Module):
+    @jaxtyped(typechecker=beartype)
+    def __init__(self) -> None:
+        pass
+    def __call__(self, x: Array) -> Array:
+        return nnx.silu(x)
+
 class ReLU(nnx.Module):
     @jaxtyped(typechecker=beartype)
     def __init__(self) -> None:
         pass
     def __call__(self, x: Array) -> Array:
         return nnx.relu(x)
+class LeakyReLU(nnx.Module):
+    @jaxtyped(typechecker=beartype)
+    def __init__(self, alpha: float=0.005) -> None:
+        self.alpha = alpha
+    def __call__(self, x: Array) -> Array:
+        return nnx.leaky_relu(x, negative_slope=self.alpha)
 
 class Snake(nnx.Module):
     @jaxtyped(typechecker=beartype)
@@ -42,13 +55,15 @@ class Snake(nnx.Module):
         x = x + b * jnp.square(jnp.sin(a * x)) / a
         return x
 
-def get_activation(activation: Literal["elu", "snake", "relu"], channels: int) -> Any:
+def get_activation(activation: Literal["elu", "snake", "relu", "leaky_relu"]|str, channels: int, **kwargs) -> Any:
     if activation == "snake":
         return Snake(channels, alpha=1.0, alpha_logscale=True)
     elif activation == "elu":
         return ELU()
     elif activation == "relu":
         return ReLU() 
+    elif activation == "leaky_relu":
+        return LeakyReLU(**kwargs)
     else:
         raise ValueError(f"Activation {activation} not supported")
 

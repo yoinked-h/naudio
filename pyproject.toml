@@ -29,6 +29,9 @@ dependencies = [
   "beartype",
   "einops",
   "transformers",
+  "librosa",
+  "soundfile",
+  "scipy",
   "tensorboard"
 ]
 
