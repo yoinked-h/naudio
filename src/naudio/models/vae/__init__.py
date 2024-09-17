@@ -1,2 +1,2 @@
-from model import AudioOobleckVae, VaeBottleneck
-__all__ = ['AudioOobleckVae', 'VaeBottleneck']
+from model import AudioOobleckVae, VaeBottleneck, VaeArgs
+__all__ = ['AudioOobleckVae', 'VaeBottleneck', 'VaeArgs']

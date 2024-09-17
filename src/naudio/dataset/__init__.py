@@ -1,5 +1,6 @@
-from dataloader import AudioDataset
+from dataloader import AudioDataset, PureAudioDataset
 
 __all__ = [
-    "AudioDataset"
+    "AudioDataset",
+    "PureAudioDataset"
 ]

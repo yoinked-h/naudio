@@ -6,7 +6,7 @@ import json
 import optax
 from naudio.models import StableAudioOpen
 from naudio.dataset import AudioDataset
-
+from .vae import AudioVaeTrainer, TrainState
 def main(model_config_path: Path, dataset_config_path: Path, train_config_path: Path):
     tcfg = json.loads(train_config_path.read_text())
     if tcfg["model"] != "stable-audio-open":
@@ -17,8 +17,8 @@ def main(model_config_path: Path, dataset_config_path: Path, train_config_path: 
 
     model = StableAudioOpen.from_config_file(model_config_path, rngseed=tcfg["seed"].encode('utf-8').hex())
     model.train() # set train mode
-    optimizers = {}
-    for mod in ['vae', 'text_encoder', 'dit']:
+    optimizers: dict[str, TrainState] = {}
+    for mod in ['text_encoder', 'dit']:
         modcfg = tcfg['training_hparams'][mod]
         match tcfg['training_hparams']["lr_scheduler"]["type"]:
             case "cosine":
@@ -38,12 +38,8 @@ def main(model_config_path: Path, dataset_config_path: Path, train_config_path: 
             case _:
                 print(f"Invalid optimizer: {opt}, using adam")
                 optimizer = optax.adam(lr)
-        if mod == 'vae':
-            optimizer = nnx.Optimizer(model.vae, optimizer)
-        elif mod == 'text_encoder':
-            optimizer = nnx.Optimizer(model.tenc, optimizer)
-        elif mod == 'dit':
-            optimizer = nnx.Optimizer(model.dit, optimizer)
+        metrics = nnx.metrics.Average()
+        optimizer = TrainState(model.dit if mod == 'dit' else model.tenc, optimizer, metrics)
         optimizers[mod] = optimizer
     def mse_loss(y_true, y_pred):
         return jnp.mean((y_true - y_pred) ** 2)
@@ -56,7 +52,7 @@ def main(model_config_path: Path, dataset_config_path: Path, train_config_path: 
             return loss
         inp, tar = batch
         grads = nnx.grad(loss_fn)(state, inp, tar)
-        state = optimizers['tenc'].update(grads)
+        state = optimizers['tenc'].update(grads=grads)
         return state
 
     @jax.jit
@@ -67,8 +63,11 @@ def main(model_config_path: Path, dataset_config_path: Path, train_config_path: 
             return loss
         inp, tar = batch
         grads = nnx.grad(loss_fn)(state, inp, tar)
-        state = optimizers['dit'].update(grads)
+        state = optimizers['dit'].update(grads=grads)
         return state
     
-    @jax.jit
-    def vae_train_step(state, batch):
+    vaetrainer = AudioVaeTrainer(model.vae, warmup_steps=125)
+    
+    def fulltrainstep(state, batch):
+        #tra
+        return state

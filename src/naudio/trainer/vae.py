@@ -2,9 +2,19 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
-from models.vae import AudioOobleckVae, VaeBottleneck
+from models.vae import AudioOobleckVae, VaeArgs
 from .loss import SumAndDifferenceSTFTLoss, AltL1Loss, MultiResolutionSTFTLoss, MultiLoss, AuralossLoss, ValueLoss
 from models.discrims import OobleckDiscriminator, EncodecDiscriminator
+import orbax.checkpoint
+
+class TrainState(nnx.Optimizer):
+    def __init__(self, model, tx, metrics):
+        self.metrics = metrics
+        super().__init__(model, tx)
+    def update(self, *, grads, **updates): #type: ignore
+        self.metrics.update(**updates)
+        super().update(grads)
+
 
 def create_loss_modules_from_bottleneck(bottleneck, loss_config):
     losses = []
@@ -32,14 +42,11 @@ class AudioVaeTrainer():
     def __init__(
         self,
         ae: AudioOobleckVae,
-        lr: float,
         warmup_steps: int,
-        enc_freeze_on_warmup: bool,
         sr: int = 44100,
         loss_cfg: dict|None = None,
         optimizer_cfg: dict|None = None,
         ema: bool = False,
-        ema_copy: bool = False,
         force_mono: bool = False,
         latent_mask_ratio: float = 0.0,
         teacher_model: AudioOobleckVae|None = None
@@ -48,11 +55,10 @@ class AudioVaeTrainer():
         self.automatic_optimization = False
 
         self.autoencoder = ae
+        self.autoencoder.train()
 
         self.warmed_up = False
         self.warmup_steps = warmup_steps
-        self.encoder_freeze_on_warmup = enc_freeze_on_warmup
-        self.lr = lr
 
         self.force_input_mono = force_mono
 
@@ -204,7 +210,12 @@ class AudioVaeTrainer():
 
         self.latent_mask_ratio = latent_mask_ratio
         self.global_step = 0
-        self.optimizers = self.configure_optimizers()
+        a, self.b = self.configure_optimizers()
+        opt_gen, opt_disc = a
+        metrics = nnx.metrics.Accuracy()
+        self.gen_state = TrainState(self.autoencoder, opt_gen, metrics)
+        metricsb = nnx.metrics.Accuracy()
+        self.disc_state = TrainState(self.discriminator, opt_disc, metricsb)
     def configure_optimizers(self):
 
         if "scheduler" in self.optimizer_cfg['autoencoder'] and "scheduler" in self.optimizer_cfg['discriminator']:
@@ -268,8 +279,9 @@ class AudioVaeTrainer():
                 raise NotImplementedError
         if 'scheduler' in self.optimizer_cfg['discriminator']:
             return [opt_gen, opt_disc], [sched_gen, sched_disc] # type: ignore
-        return [opt_gen, opt_disc] 
-    def training_step(self, batch, batch_idx):
+        return [opt_gen, opt_disc], None
+    @jax.jit
+    def training_step(self, batch):
         reals, _ = batch
 
         # Remove extra dimension added by WebDataset
@@ -285,18 +297,14 @@ class AudioVaeTrainer():
 
         encoder_input = reals
 
-        if self.force_input_mono and encoder_input.shape[1] > 1:
-            encoder_input = encoder_input.mean(dim=1, keepdim=True)
+        if self.force_input_mono and encoder_input.shape[2] > 1:
+            encoder_input = encoder_input.mean(dim=2, keepdim=True)
 
         loss_info["encoder_input"] = encoder_input
 
         data_std = encoder_input.std()
 
-        if self.warmed_up and self.encoder_freeze_on_warmup:
-            #nograd
-            latents, encoder_info = self.autoencoder.encode(encoder_input, return_info=True)
-        else:
-            latents, encoder_info = self.autoencoder.encode(encoder_input, return_info=True)
+        latents, encoder_info = self.autoencoder.encode(encoder_input, return_info=True)
 
         loss_info["latents"] = latents
 
@@ -319,14 +327,13 @@ class AudioVaeTrainer():
         loss_info["decoded"] = decoded
 
         if self.autoencoder.audio_channels == 2:
-            loss_info["decoded_left"] = decoded[:, 0:1, :]
-            loss_info["decoded_right"] = decoded[:, 1:2, :]
-            loss_info["reals_left"] = reals[:, 0:1, :]
-            loss_info["reals_right"] = reals[:, 1:2, :]
+            loss_info["decoded_left"] = decoded[:, :, 0:1]
+            loss_info["decoded_right"] = decoded[:, :, 1:2]
+            loss_info["reals_left"] = reals[:, :, 0:1]
+            loss_info["reals_right"] = reals[:, :, 1:2]
 
         # Distillation
         if self.teacher_model is not None:
-            #noqa
             teacher_decoded = self.teacher_model.decode(teacher_latents) # type: ignore
             own_latents_teacher_decoded = self.teacher_model.decode(latents) #Distilled model's latents decoded by teacher
             teacher_latents_own_decoded = self.autoencoder.decode(teacher_latents) #Teacher's latents decoded by distilled model  # type: ignore
@@ -345,53 +352,46 @@ class AudioVaeTrainer():
         loss_info["loss_adv"] = loss_adv
         loss_info["feature_matching_distance"] = feature_matching_distance
 
-        opt_gen, opt_disc = self.optimizers[0]
-
-        lr_schedulers = self.optimizers[1]
 
         sched_gen = None
         sched_disc = None
 
-        if lr_schedulers is not None:
-            sched_gen, sched_disc = lr_schedulers
+        if self.b is not None:
+            sched_gen, sched_disc = self.b
 
         # Train the discriminator
         if self.global_step % 2 and self.warmed_up:
             loss, losses = self.losses_disc(loss_info)
-
             log_dict = {
-                'train/disc_lr': 
+                'train/disc_lr': self.gen_state.metrics.compute()
             }
 
-            opt_disc.zero_grad()
-            self.manual_backward(loss)
-            opt_disc.step()
+            grads = jax.grad(self.losses_disc)(self.disc_state, loss_info)
+            self.disc_state.update(grads=grads)
 
             if sched_disc is not None:
-                # sched step every step
-                sched_disc.step()
+                # sched step every step 
+                sched_disc(self.global_step)
 
         # Train the generator 
         else:
 
             loss, losses = self.losses_gen(loss_info)
 
-            if self.use_ema:
-                self.autoencoder_ema.update()
 
-            opt_gen.zero_grad()
-            self.manual_backward(loss)
-            opt_gen.step()
+            grads = jax.grad(self.losses_gen)(self.gen_state, loss_info)
+            self.gen_state.update(grads=grads)
 
             if sched_gen is not None:
                 # scheduler step every step
-                sched_gen.step()
-
+                sched_gen(self.global_step)
+            if isinstance(latents, tuple):
+                latents = latents[0]
             log_dict = {
-                'train/loss': loss.detach(),
-                'train/latent_std': latents.std().detach(),
-                'train/data_std': data_std.detach(),
-                'train/gen_lr': opt_gen.param_groups[0]['lr']
+                'train/loss': loss,
+                'train/latent_std': latents.std().item(),
+                'train/data_std': data_std,
+                'train/gen_lr': self.gen_state.metrics.compute(),
             }
 
         for loss_name, loss_value in losses.items():
@@ -401,14 +401,45 @@ class AudioVaeTrainer():
 
         return loss
     
-    def export_model(self, path, use_safetensors=False):
+    def log_dict(self, log_dict, prog_bar=False, on_step=False):
+        ...
+    def export_model(self, path):
         if self.autoencoder_ema is not None:
             model = self.autoencoder_ema.ema_model
         else:
             model = self.autoencoder
-            
-        if use_safetensors:
-            save_model(model, path)
-        else:
-            torch.save({"state_dict": model.state_dict()}, path)
-        
+        opts = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=3)
+        serializer = orbax.checkpoint.CheckpointManager(
+            path, options=opts
+        )
+        ckpt = {'model': model, 'data': [self.gen_state.opt_state]}
+        serializer.save(self.global_step, ckpt)
+
+
+if __name__ == "__main__":
+    vargs = VaeArgs(
+        features=2,
+        channels=128,
+        latent_dim=128,
+        decoder_latent_dim=64,
+        c_mults = (1, 2, 4, 8, 16),
+        strides = (2, 4, 4, 8, 8),
+        use_snake=True
+    )
+    rngs = nnx.Rngs(0x6589ffea)
+    model = AudioOobleckVae(vargs, rngs)
+    trainer = AudioVaeTrainer(
+        model,
+        125
+    )
+    epochs = 10
+    from ..dataset import PureAudioDataset
+
+    dataset = PureAudioDataset(
+        {"audio_dir": "D:\\code\\zunset\\tod\\", "audio_ext": ".wav"}
+    )
+
+    for epoch in range(epochs):
+        for data in dataset:
+            trainer.training_step((data,))
+        print(f"Epoch {epoch} completed")

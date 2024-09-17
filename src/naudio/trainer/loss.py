@@ -124,7 +124,7 @@ class SpectralConvergenceLoss(nnx.Module):
         pass
     
     def __call__(self, x_mag, y_mag):
-        return (jnp.linalg.norm(y_mag - x_mag, p="fro", dim=[-1, -2]) / jnp.linalg.norm(y_mag, p="fro", dim=[-1, -2])).mean()
+        return (jnp.linalg.norm(y_mag - x_mag, p="fro", dim=[-2, -1]) / jnp.linalg.norm(y_mag, p="fro", dim=[-2, -1])).mean()
 
 class STFTMagnitudeLoss(nnx.Module):
     def __init__(self, log=True, log_eps=0.0, log_fac=1.0, distance="L1", reduction="mean"):
@@ -151,8 +151,8 @@ class SumAndDifferenceLoss(nnx.Module):
             raise ValueError("input must be 3D (b, t, c)")
         if x.shape[2] != 2: 
             raise ValueError("input must be stereo")
-        sum_sig = jnp.expand_dims(self.sum(x), 1)
-        diff_sig = jnp.expand_dims(self.diff(x), 1)
+        sum_sig = jnp.expand_dims(self.sum(x), 2)
+        diff_sig = jnp.expand_dims(self.diff(x), 2)
         
         return sum_sig, diff_sig
     @staticmethod
@@ -251,11 +251,11 @@ class STFTLoss(nnx.Module):
             window_fn=self.window_type,
         )
         x_mag = jnp.sqrt(
-            jnp.clip((x_stft[-1].real**2) + (x_stft[-1].imag**2), min=self.eps)
+            jnp.clip((x_stft.real**2) + (x_stft.imag**2), min=self.eps)
         )
 
         if self.phs_used:
-            x_phs = jnp.angle(x_stft[-1])
+            x_phs = jnp.angle(x_stft)
         else:
             x_phs = None
 

@@ -32,6 +32,8 @@ dependencies = [
   "librosa",
   "soundfile",
   "scipy",
+  "orbax",
+  "safetensors",
   "tensorboard"
 ]
 
