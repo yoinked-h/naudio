@@ -351,12 +351,12 @@ class MultiScaleSTFTDiscriminator(nnx.Module):
     """
     def __init__(self, filters: int, in_channels: int = 1, out_channels: int = 1,
                 n_ffts = [1024, 2048, 512], hop_lengths = [256, 512, 128],
-                win_lengths = [1024, 2048, 512], **kwargs):
+                win_lengths = [1024, 2048, 512], rngs: nnx.Rngs|None = None, **kwargs):
         super().__init__()
         assert len(n_ffts) == len(hop_lengths) == len(win_lengths)
         self.discriminators = [
             DiscriminatorSTFT(filters, in_channels=in_channels, out_channels=out_channels,
-                              n_fft=n_ffts[i], win_length=win_lengths[i], hop_length=hop_lengths[i], **kwargs)
+                              n_fft=n_ffts[i], win_length=win_lengths[i], hop_length=hop_lengths[i], rngs=rngs, **kwargs)
             for i in range(len(n_ffts))
         ]
         self.num_discriminators = len(self.discriminators)

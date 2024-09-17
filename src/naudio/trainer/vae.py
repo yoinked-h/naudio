@@ -2,9 +2,9 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
-from models.vae import AudioOobleckVae, VaeArgs
-from .loss import SumAndDifferenceSTFTLoss, AltL1Loss, MultiResolutionSTFTLoss, MultiLoss, AuralossLoss, ValueLoss
-from models.discrims import OobleckDiscriminator, EncodecDiscriminator
+from naudio.models.vae import AudioOobleckVae, VaeArgs
+from naudio.trainer.loss import SumAndDifferenceSTFTLoss, AltL1Loss, MultiResolutionSTFTLoss, MultiLoss, AuralossLoss, ValueLoss
+from naudio.models.discrims import OobleckDiscriminator, EncodecDiscriminator
 import orbax.checkpoint
 
 class TrainState(nnx.Optimizer):
@@ -49,9 +49,10 @@ class AudioVaeTrainer():
         ema: bool = False,
         force_mono: bool = False,
         latent_mask_ratio: float = 0.0,
-        teacher_model: AudioOobleckVae|None = None
+        teacher_model: AudioOobleckVae|None = None,
+        rngs: nnx.Rngs|None = None
     ):
-        
+        assert rngs
         self.automatic_optimization = False
 
         self.autoencoder = ae
@@ -145,9 +146,9 @@ class AudioVaeTrainer():
         # Discriminator
 
         if loss_cfg['discriminator']['type'] == 'oobleck':
-            self.discriminator = OobleckDiscriminator(**loss_cfg['discriminator']['config'])
+            self.discriminator = OobleckDiscriminator(**loss_cfg['discriminator']['config'])#, rngs=rngs)
         elif loss_cfg['discriminator']['type'] == 'encodec':
-            self.discriminator = EncodecDiscriminator(in_channels=self.autoencoder.audio_channels, **loss_cfg['discriminator']['config'])
+            self.discriminator = EncodecDiscriminator(in_channels=self.autoencoder.audio_channels, **loss_cfg['discriminator']['config'], rngs=rngs)
         self.gen_loss_modules = []
 
         # Adversarial and feature matching losses
