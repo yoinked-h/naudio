@@ -1,3 +1,4 @@
+
 # Created by https://www.toptal.com/developers/gitignore/api/linux,macos,python,windows,vim,pycharm,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=linux,macos,python,windows,vim,pycharm,visualstudiocode
 
@@ -175,7 +176,6 @@ __pycache__/
 
 # C extensions
 *.so
-
 # Distribution / packaging
 .Python
 build/
