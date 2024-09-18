@@ -225,12 +225,9 @@ class AudioVaeTrainer(nnx.Module):
 
         self.latent_mask_ratio = latent_mask_ratio
         self.global_step = 0
-        a, self.b = self.configure_optimizers()
-        opt_gen, opt_disc = a
-        metrics = nnx.metrics.Accuracy()
-        self.gen_state = TrainState(self.autoencoder, opt_gen, metrics)
-        metricsb = nnx.metrics.Accuracy()
-        self.disc_state = TrainState(self.discriminator, opt_disc, metricsb)
+    def set_b(self, b):
+        self.b = b
+    
     def configure_optimizers(self):
 
         if "scheduler" in self.optimizer_cfg['autoencoder'] and "scheduler" in self.optimizer_cfg['discriminator']:
@@ -297,6 +294,7 @@ class AudioVaeTrainer(nnx.Module):
         return [opt_gen, opt_disc], None
     @nnx.jit
     def training_step(self, batch):
+        self.global_step += 1
         reals = batch
         reals = jnp.array(reals, dtype=jnp.float32)
         reals = jnp.expand_dims(reals, axis=0) # (b, l, c)
@@ -371,18 +369,12 @@ class AudioVaeTrainer(nnx.Module):
 
         if self.b is not None:
             sched_gen, sched_disc = self.b
-        disc_grads = None
-        gen_grads = None
         # Train the discriminator
         if self.global_step % 2 and self.warmed_up:
             loss, losses = self.losses_disc(loss_info)
             log_dict = {
-                'train/disc_lr': self.disc_state.metrics.compute()
+                'train/loss_dis': loss_dis,
             }
-
-            disc_grads = jax.grad(self.losses_disc)(self.disc_state, loss_info)
-            self.disc_state.update(grads=disc_grads)
-
             if sched_disc is not None:
                 # sched step every step 
                 sched_disc(self.global_step)
@@ -393,8 +385,6 @@ class AudioVaeTrainer(nnx.Module):
             loss, losses = self.losses_gen(loss_info)
 
 
-            gen_grads = jax.grad(self.losses_gen)(self.gen_state, loss_info)
-            self.gen_state.update(grads=gen_grads)
 
             if sched_gen is not None:
                 # scheduler step every step
@@ -404,8 +394,7 @@ class AudioVaeTrainer(nnx.Module):
             log_dict = {
                 'train/loss': loss,
                 'train/latent_std': latents.std().item(),
-                'train/data_std': data_std,
-                'train/gen_lr': self.gen_state.metrics.compute(),
+                'train/data_std': data_std
             }
 
         for loss_name, loss_value in losses.items():
@@ -413,15 +402,30 @@ class AudioVaeTrainer(nnx.Module):
 
         self.log_dict(log_dict, prog_bar=True, on_step=True)
 
-        return loss, gen_grads, disc_grads
-    def bettertrain(self, batch):
-        
+        return loss, loss_info, self.global_step % 2 and self.warmed_up
+    def bettertrain(self, batch, disc_state, gen_state):
+        l, linfo, discturn = self.training_step(batch)
+        if discturn:
+            log_dict = {
+                'train/disc_lr': disc_state.metrics.compute()
+            }
+
+            disc_grads = jax.grad(self.losses_disc)(disc_state, linfo)
+            disc_state.update(grads=disc_grads)
+        else:
+            
+            log_dict = {
+                'train/gen_lr': disc_state.metrics.compute()
+            }
+            gen_grads = jax.grad(self.losses_gen)(gen_state, linfo)
+            gen_state.update(grads=gen_grads)
+        self.log_dict(log_dict, prog_bar=False, on_step=False)
     def log_dict(self, log_dict, prog_bar=False, on_step=False):
         if self.neptunerun is None:
             return
         for k, v in log_dict.items():
-            self.neptunerun[k].append(v)
-    def export_model(self, path):
+            self.neptunerun[k].append(v, step=self.global_step)
+    def export_model(self, path, gen_state):
         if self.autoencoder_ema is not None:
             model = self.autoencoder_ema.ema_model
         else:
@@ -430,7 +434,7 @@ class AudioVaeTrainer(nnx.Module):
         serializer = orbax.checkpoint.CheckpointManager(
             path, options=opts
         )
-        ckpt = {'model': model, 'data': [self.gen_state.opt_state]}
+        ckpt = {'model': model, 'data': [gen_state.opt_state]}
         serializer.save(self.global_step, ckpt)
 
 
@@ -452,6 +456,9 @@ if __name__ == "__main__":
         neptune_project="yoinked/zunda0001",
         rngs=rngs
     )
+    a, b = trainer.configure_optimizers()
+    genst, discst = a
+    trainer.set_b(b)
     epochs = 10
     from naudio.dataset.dataset import PureAudioDataset
 
@@ -462,5 +469,5 @@ if __name__ == "__main__":
     for epoch in range(epochs):
         for data in dataset:
             print(data)
-            trainer.training_step(data)
+            trainer.bettertrain(data, genst, discst)
         print(f"Epoch {epoch} completed")
