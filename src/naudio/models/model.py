@@ -1,7 +1,7 @@
-from vae.model import AudioOobleckVae, VaeArgs
-from dit.model import DiT, ModelArgs
-from t5.model import T5, T5Config
-from t5.tokenizer import T5Tokenizer
+from .vae.model import AudioOobleckVae, VaeArgs
+from .dit.model import DiT, ModelArgs
+from .t5.model import T5, T5Config
+from .t5.tokenizer import T5Tokenizer
 
 import jax.numpy as jnp
 from pathlib import Path

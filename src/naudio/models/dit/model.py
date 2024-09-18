@@ -28,7 +28,7 @@ def unstack(x, axis=0):
 
 
 class FourierFeatures(nnx.Module):
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         self.weight = nnx.Linear(
             in_features=1,
@@ -38,20 +38,20 @@ class FourierFeatures(nnx.Module):
             dtype=dtype
         )
 
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, x: Float[Array, " 1"]) -> Float[Array, " timestep_dim"]:
         f = 2 * jnp.pi * self.weight(x)
         return jnp.concatenate([jnp.cos(f), jnp.sin(f)], axis=-1)
 
 class FeedForward(nnx.Module):
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         self.linear_in = GLU(in_features=args.dim, out_features=args.dim * 4, rngs=rngs, dtype=dtype)
         self.linear_out = nnx.Linear(
             in_features=args.dim * 4, out_features=args.dim, use_bias=True, rngs=rngs, dtype=dtype
         )
 
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, x):
         x = self.linear_in(x)
         # silu act inside linear_in
@@ -61,7 +61,7 @@ class FeedForward(nnx.Module):
 
 # TODO: make generic
 class Attention(nnx.Module):
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(
         self, q_in_features, k_in_features, v_in_features, d_model, num_heads, rngs: nnx.Rngs, dtype=jnp.float32
     ) -> None:
@@ -70,7 +70,7 @@ class Attention(nnx.Module):
         self.to_k = nnx.Linear(in_features=k_in_features, out_features=d_model, rngs=rngs, dtype=dtype)
         self.to_v = nnx.Linear(in_features=v_in_features, out_features=d_model, rngs=rngs, dtype=dtype)
 
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, q, k, v):
         # projections
         q = self.to_q(q)
@@ -91,7 +91,7 @@ class Attention(nnx.Module):
 
 
 class TransformerBlock(nnx.Module):
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         self.pre_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs, dtype=dtype)
         self.ctx_norm = nnx.LayerNorm(num_features=args.context_dim, rngs=rngs, dtype=dtype)
@@ -118,7 +118,7 @@ class TransformerBlock(nnx.Module):
         self.ff_norm = nnx.LayerNorm(num_features=args.dim, rngs=rngs, dtype=dtype)
         self.ff = FeedForward(args=args, rngs=rngs, dtype=dtype)
 
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(self, x, ctx):
         # self attention
         pre_norm_x = self.pre_norm(x)
@@ -133,7 +133,7 @@ class TransformerBlock(nnx.Module):
 
 
 class DiT(nnx.Module):
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __init__(self, args: ModelArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         self.args = args
 
@@ -193,7 +193,7 @@ class DiT(nnx.Module):
             dtype=dtype
         )
 
-    @jaxtyped(typechecker=TYPE_CHECKER)
+    # @jaxtyped(typechecker=TYPE_CHECKER)
     def __call__(
         self,
         x: Float[Array, "x_dim x_chan"],

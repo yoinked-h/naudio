@@ -6,7 +6,7 @@ from naudio.models.vae import AudioOobleckVae, VaeArgs
 from naudio.trainer.loss import SumAndDifferenceSTFTLoss, AltL1Loss, MultiResolutionSTFTLoss, MultiLoss, AuralossLoss, ValueLoss
 from naudio.models.discrims import OobleckDiscriminator, EncodecDiscriminator
 import orbax.checkpoint
-
+import neptune
 class TrainState(nnx.Optimizer):
     def __init__(self, model, tx, metrics):
         self.metrics = metrics
@@ -38,7 +38,7 @@ class InverseLR:
         lr_mult = (1 + step / self.inv_gamma) ** -self.power
         return max(self.final_lr, self.lr * lr_mult)
 
-class AudioVaeTrainer():
+class AudioVaeTrainer(nnx.Module):
     def __init__(
         self,
         ae: AudioOobleckVae,
@@ -50,9 +50,12 @@ class AudioVaeTrainer():
         force_mono: bool = False,
         latent_mask_ratio: float = 0.0,
         teacher_model: AudioOobleckVae|None = None,
+        neptune_project: str|None = None,
         rngs: nnx.Rngs|None = None
     ):
         assert rngs
+        if neptune_project:
+            self.neptunerun = neptune.init_run(project=neptune_project)
         self.automatic_optimization = False
 
         self.autoencoder = ae
@@ -106,7 +109,8 @@ class AudioVaeTrainer():
             
         self.optimizer_cfg = optimizer_cfg
         if loss_cfg is None:        
-            loss_cfg = {"discriminator": {
+            loss_cfg = {
+            "discriminator": {
                 "type": "encodec",
                 "config": {
                     "filters": 64,
@@ -130,7 +134,17 @@ class AudioVaeTrainer():
                 "weights": {
                     "mrstft": 1.0
                 }
-            }}
+            },
+            "time": {
+                "type": "l1",
+                "config": {},
+                "weights": {
+                    "l1": 0.0,
+                }
+            }
+            }
+            
+            
 
         self.loss_cfg = loss_cfg
         
@@ -223,71 +237,69 @@ class AudioVaeTrainer():
             match self.optimizer_cfg['autoencoder']['scheduler']['type'].lower():
                 case 'cosine':
                     sched_gen = optax.cosine_decay_schedule(
-                        init_value=self.optimizer_cfg['autoencoder']['optimizer']['init_value'],
-                        decay_steps=self.optimizer_cfg['autoencoder']['scheduler']['decay_steps'])
+                        init_value=self.optimizer_cfg['autoencoder']['optimizer']['config']['init_value'],
+                        decay_steps=self.optimizer_cfg['autoencoder']['scheduler']['config']['decay_steps'])
                 case 'polynomial':
                     sched_gen = optax.polynomial_schedule(
-                        init_value=self.optimizer_cfg['autoencoder']['optimizer']['init_value'],
-                        end_value=self.optimizer_cfg['autoencoder']['scheduler']['end_value'],
-                        power=self.optimizer_cfg['autoencoder']['scheduler']['power'],
-                        transition_steps=self.optimizer_cfg['autoencoder']['scheduler']['transition_steps'])
+                        init_value=self.optimizer_cfg['autoencoder']['optimizer']['config']['init_value'],
+                        end_value=self.optimizer_cfg['autoencoder']['scheduler']['config']['end_value'],
+                        power=self.optimizer_cfg['autoencoder']['scheduler']['config']['power'],
+                        transition_steps=self.optimizer_cfg['autoencoder']['scheduler']['config']['transition_steps'])
                 case 'inverselr':
-                    sched_gen = InverseLR(lr=self.optimizer_cfg['autoencoder']['optimizer']['lr'], inv_gamma=self.optimizer_cfg['autoencoder']['scheduler']['inv_gamma'],
-                                        power=self.optimizer_cfg['autoencoder']['scheduler']['power'])
+                    sched_gen = InverseLR(lr=self.optimizer_cfg['autoencoder']['optimizer']['config']['lr'], inv_gamma=self.optimizer_cfg['autoencoder']['scheduler']['config']['inv_gamma'],
+                                        power=self.optimizer_cfg['autoencoder']['scheduler']['config']['power'])
                 case _:
                     sched_gen = optax.constant_schedule(0.0005)
             match self.optimizer_cfg['discriminator']['scheduler']['type'].lower():
                 case 'cosine':
                     sched_disc = optax.cosine_decay_schedule(
-                        init_value=self.optimizer_cfg['discriminator']['optimizer']['init_value'],
-                        decay_steps=self.optimizer_cfg['discriminator']['scheduler']['decay_steps'])
+                        init_value=self.optimizer_cfg['discriminator']['optimizer']['config']['init_value'],
+                        decay_steps=self.optimizer_cfg['discriminator']['scheduler']['config']['decay_steps'])
                 case 'polynomial':
                     sched_disc = optax.polynomial_schedule(
-                        init_value=self.optimizer_cfg['discriminator']['optimizer']['init_value'],
-                        end_value=self.optimizer_cfg['discriminator']['scheduler']['end_value'],
-                        power=self.optimizer_cfg['discriminator']['scheduler']['power'],
-                        transition_steps=self.optimizer_cfg['discriminator']['scheduler']['transition_steps'])
+                        init_value=self.optimizer_cfg['discriminator']['optimizer']['config']['init_value'],
+                        end_value=self.optimizer_cfg['discriminator']['scheduler']['config']['end_value'],
+                        power=self.optimizer_cfg['discriminator']['scheduler']['config']['power'],
+                        transition_steps=self.optimizer_cfg['discriminator']['scheduler']['config']['transition_steps'])
                 case 'inverselr':
-                    sched_disc = InverseLR(lr=self.optimizer_cfg['discriminator']['optimizer']['lr'], inv_gamma=self.optimizer_cfg['discriminator']['scheduler']['inv_gamma'],
-                                        power=self.optimizer_cfg['discriminator']['scheduler']['power'])
+                    sched_disc = InverseLR(lr=self.optimizer_cfg['discriminator']['optimizer']['config']['lr'], inv_gamma=self.optimizer_cfg['discriminator']['scheduler']['config']['inv_gamma'],
+                                        power=self.optimizer_cfg['discriminator']['scheduler']['config']['power'])
                 case _:
                     sched_disc = optax.constant_schedule(0.0005)
                     
         match self.optimizer_cfg['autoencoder']['optimizer']['type'].lower():
             case 'adam':
                 opt_gen = optax.adam(sched_gen if 'scheduler' in self.optimizer_cfg['autoencoder'] else 0.0005, # type: ignore
-                                    b1=self.optimizer_cfg['autoencoder']['optimizer']['b1'],
-                                    b2=self.optimizer_cfg['autoencoder']['optimizer']['b2'])
+                                    b1=self.optimizer_cfg['autoencoder']['optimizer']['config']['betas'][0],
+                                    b2=self.optimizer_cfg['autoencoder']['optimizer']['config']['betas'][1])
             case 'adamw':
                 opt_gen = optax.adamw(sched_gen if 'scheduler' in self.optimizer_cfg['autoencoder'] else 0.0005, # type: ignore
-                                    b1=self.optimizer_cfg['autoencoder']['optimizer']['b1'],
-                                    b2=self.optimizer_cfg['autoencoder']['optimizer']['b2'],
-                                    weight_decay=self.optimizer_cfg['autoencoder']['optimizer']['weight_decay'])
+                                    b1=self.optimizer_cfg['autoencoder']['optimizer']['config']['betas'][0],
+                                    b2=self.optimizer_cfg['autoencoder']['optimizer']['config']['betas'][1],
+                                    weight_decay=self.optimizer_cfg['autoencoder']['optimizer']['config']['weight_decay'])
             case _:
                 raise NotImplementedError
 
         match self.optimizer_cfg['discriminator']['optimizer']['type'].lower():
             case 'adam':
                 opt_disc = optax.adam(sched_disc if 'scheduler' in self.optimizer_cfg['discriminator'] else 0.0005, # type: ignore
-                                    b1=self.optimizer_cfg['discriminator']['optimizer']['b1'],
-                                    b2=self.optimizer_cfg['discriminator']['optimizer']['b2'])
+                                    b1=self.optimizer_cfg['discriminator']['optimizer']['config']['b1'],
+                                    b2=self.optimizer_cfg['discriminator']['optimizer']['config']['b2'])
             case 'adamw':
                 opt_disc = optax.adamw(sched_disc if 'scheduler' in self.optimizer_cfg['discriminator'] else 0.0005, # type: ignore
-                                    b1=self.optimizer_cfg['discriminator']['optimizer']['b1'],
-                                    b2=self.optimizer_cfg['discriminator']['optimizer']['b2'],
-                                    weight_decay=self.optimizer_cfg['discriminator']['optimizer']['weight_decay'])
+                                    b1=self.optimizer_cfg['discriminator']['optimizer']['config']['betas'][0],
+                                    b2=self.optimizer_cfg['discriminator']['optimizer']['config']['betas'][1],
+                                    weight_decay=self.optimizer_cfg['discriminator']['optimizer']['config']['weight_decay'])
             case _:
                 raise NotImplementedError
         if 'scheduler' in self.optimizer_cfg['discriminator']:
             return [opt_gen, opt_disc], [sched_gen, sched_disc] # type: ignore
         return [opt_gen, opt_disc], None
-    @jax.jit
+    @nnx.jit
     def training_step(self, batch):
-        reals, _ = batch
-
-        # Remove extra dimension added by WebDataset
-        if reals.ndim == 4 and reals.shape[0] == 1:
-            reals = reals[0]
+        reals = batch
+        reals = jnp.array(reals, dtype=jnp.float32)
+        reals = jnp.expand_dims(reals, axis=0) # (b, l, c)
 
         if self.global_step >= self.warmup_steps:
             self.warmed_up = True
@@ -299,7 +311,7 @@ class AudioVaeTrainer():
         encoder_input = reals
 
         if self.force_input_mono and encoder_input.shape[2] > 1:
-            encoder_input = encoder_input.mean(dim=2, keepdim=True)
+            encoder_input = encoder_input.mean(axis=2, keepdims=True)
 
         loss_info["encoder_input"] = encoder_input
 
@@ -359,16 +371,17 @@ class AudioVaeTrainer():
 
         if self.b is not None:
             sched_gen, sched_disc = self.b
-
+        disc_grads = None
+        gen_grads = None
         # Train the discriminator
         if self.global_step % 2 and self.warmed_up:
             loss, losses = self.losses_disc(loss_info)
             log_dict = {
-                'train/disc_lr': self.gen_state.metrics.compute()
+                'train/disc_lr': self.disc_state.metrics.compute()
             }
 
-            grads = jax.grad(self.losses_disc)(self.disc_state, loss_info)
-            self.disc_state.update(grads=grads)
+            disc_grads = jax.grad(self.losses_disc)(self.disc_state, loss_info)
+            self.disc_state.update(grads=disc_grads)
 
             if sched_disc is not None:
                 # sched step every step 
@@ -380,8 +393,8 @@ class AudioVaeTrainer():
             loss, losses = self.losses_gen(loss_info)
 
 
-            grads = jax.grad(self.losses_gen)(self.gen_state, loss_info)
-            self.gen_state.update(grads=grads)
+            gen_grads = jax.grad(self.losses_gen)(self.gen_state, loss_info)
+            self.gen_state.update(grads=gen_grads)
 
             if sched_gen is not None:
                 # scheduler step every step
@@ -400,10 +413,14 @@ class AudioVaeTrainer():
 
         self.log_dict(log_dict, prog_bar=True, on_step=True)
 
-        return loss
-    
+        return loss, gen_grads, disc_grads
+    def bettertrain(self, batch):
+        
     def log_dict(self, log_dict, prog_bar=False, on_step=False):
-        ...
+        if self.neptunerun is None:
+            return
+        for k, v in log_dict.items():
+            self.neptunerun[k].append(v)
     def export_model(self, path):
         if self.autoencoder_ema is not None:
             model = self.autoencoder_ema.ema_model
@@ -431,10 +448,12 @@ if __name__ == "__main__":
     model = AudioOobleckVae(vargs, rngs)
     trainer = AudioVaeTrainer(
         model,
-        125
+        125,
+        neptune_project="yoinked/zunda0001",
+        rngs=rngs
     )
     epochs = 10
-    from ..dataset import PureAudioDataset
+    from naudio.dataset.dataset import PureAudioDataset
 
     dataset = PureAudioDataset(
         {"audio_dir": "D:\\code\\zunset\\tod\\", "audio_ext": ".wav"}
@@ -442,5 +461,6 @@ if __name__ == "__main__":
 
     for epoch in range(epochs):
         for data in dataset:
-            trainer.training_step((data,))
+            print(data)
+            trainer.training_step(data)
         print(f"Epoch {epoch} completed")

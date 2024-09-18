@@ -1,4 +1,4 @@
-from model import StableAudioOpen, StableAudioOpenConfig
+from .model import StableAudioOpen, StableAudioOpenConfig
 
 __all__ = [
     "StableAudioOpen",

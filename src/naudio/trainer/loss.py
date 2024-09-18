@@ -25,9 +25,8 @@ def stft(signal,
                 pad:str = "end",
                 pad_mode: str = 'constant',
                 ):
+    signal = signal[0]
     signal_length = signal.shape[1]
-    if len(signal.shape) != 2:
-        raise ValueError('Input signal should be 2-dimensional.')
 
     if frame_length is None:
         frame_length = n_fft
@@ -38,6 +37,7 @@ def stft(signal,
     signal = signal[:, :, jnp.newaxis]
 
     # Get the window function.
+    window_fn = window_fn.replace('_window', '')
     fft_window = scipy.signal.get_window(window_fn, frame_length, fftbins=True)
     # Pad the window to length n_fft with zeros.
     if frame_length < n_fft:
@@ -65,7 +65,7 @@ def stft(signal,
         else:
             raise ValueError(
                     f'Padding should be NONE, START, END, BOTH, or ALIGHED, get {pad}.')
-
+        print(signal.shape)
         signal = jnp.pad(signal, pad_width=((0, 0), pad_shape, (0, 0)),
                                         mode=pad_mode)
     elif signal_length < n_fft:
@@ -110,6 +110,7 @@ class L1Loss(nnx.Module):
         self.redfunc = get_reduction(reduction)
 
     def __call__(self, x, y):
+        
         return self.redfunc(jnp.abs(x - y))
 
 class L2Loss(nnx.Module):
@@ -124,7 +125,11 @@ class SpectralConvergenceLoss(nnx.Module):
         pass
     
     def __call__(self, x_mag, y_mag):
-        return (jnp.linalg.norm(y_mag - x_mag, p="fro", dim=[-2, -1]) / jnp.linalg.norm(y_mag, p="fro", dim=[-2, -1])).mean()
+        print(x_mag.shape, y_mag.shape)
+        minlen = min(x_mag.shape[0], y_mag.shape[0])
+        x_mag = x_mag[:minlen]
+        y_mag = y_mag[:minlen]
+        return (jnp.linalg.norm(y_mag - x_mag, ord="fro", axis=(-2, -1)) / jnp.linalg.norm(y_mag, ord="fro", axis=(-2, -1))).mean()
 
 class STFTMagnitudeLoss(nnx.Module):
     def __init__(self, log=True, log_eps=0.0, log_fac=1.0, distance="L1", reduction="mean"):
@@ -141,6 +146,9 @@ class STFTMagnitudeLoss(nnx.Module):
         if self.log:
             x = jnp.log(self.log_eps + self.log_fac * x)
             y = jnp.log(self.log_eps + self.log_fac * y)
+        minlen = min(x.shape[0], y.shape[0])
+        x = x[:minlen]
+        y = y[:minlen]
         return self.distance(x, y)
 class SumAndDifferenceLoss(nnx.Module):
     def __init__(self):
@@ -162,6 +170,67 @@ class SumAndDifferenceLoss(nnx.Module):
     def diff(x):
         return x[:, :, 0] - x[:, :, 1]
 
+class FIRFilter(nnx.Module):
+
+    def __init__(self, filter_type="hp", coef=0.85, fs=44100, ntaps=101, plot=False):
+        """Initilize FIR pre-emphasis filtering module."""
+        super(FIRFilter, self).__init__()
+        self.filter_type = filter_type
+        self.coef = coef
+        self.fs = fs
+        self.ntaps = ntaps
+        self.plot = plot
+
+        import scipy.signal
+
+        if ntaps % 2 == 0:
+            raise ValueError(f"ntaps must be odd (ntaps={ntaps}).")
+
+        if filter_type == "hp":
+            self.fir = jnp.reshape(jnp.array([1, 0, -coef]), (1, -1, 1))
+        elif filter_type == "fd":
+            self.fir = jnp.reshape(jnp.array([1, -coef, 0]), (1, -1, 1))
+        elif filter_type == "aw":
+            # Definition of analog A-weighting filter according to IEC/CD 1672.
+            f1 = 20.598997
+            f2 = 107.65265
+            f3 = 737.86223
+            f4 = 12194.217
+            A1000 = 1.9997
+
+            NUMs = [(2 * jnp.pi * f4) ** 2 * (10 ** (A1000 / 20)), 0, 0, 0, 0]
+            DENs = jnp.polymul(
+                jnp.array([1, 4 * jnp.pi * f4, (2 * jnp.pi * f4) ** 2]),
+                jnp.array([1, 4 * jnp.pi * f1, (2 * jnp.pi * f1) ** 2]),
+            )
+            DENs = jnp.polymul(
+                jnp.polymul(DENs, jnp.array([1, 2 * jnp.pi * f3])), jnp.array([1, 2 * jnp.pi * f2])
+            )
+
+            # convert analog filter to digital filter
+            b, a = scipy.signal.bilinear(NUMs, DENs, fs=fs)
+
+            # compute the digital filter frequency response
+            w_iir, h_iir = scipy.signal.freqz(b, a, worN=512, fs=fs)
+
+            # then we fit to 101 tap FIR filter with least squares
+            taps = scipy.signal.firls(ntaps, w_iir, abs(h_iir), fs=fs)
+
+            # b c l -> b l c
+            # taps = taps.reshape(())
+            self.fir = jnp.reshape(jnp.array(taps.astype("float32")), (1, -1, 1))
+
+
+    def __call__(self, input, target):
+        input = jax.lax.conv_general_dilated(
+            input, self.fir, padding=[(self.ntaps // 2, 0)], window_strides=[1], dimension_numbers=('NHC', 'OHI', 'NHC')
+        )
+        target = jax.lax.conv_general_dilated(
+            target, self.fir, padding=[(self.ntaps // 2, 0)], window_strides=[1], dimension_numbers=('NHC', 'OHI', 'NHC')
+        )
+        return input, target
+
+
 class STFTLoss(nnx.Module):
     def __init__(self,
         fft_size: int = 1024,
@@ -180,8 +249,9 @@ class STFTLoss(nnx.Module):
         eps: float = 1e-8,
         output: str = "loss",
         reduction: str = "mean",
-        mag_distance: str = "L1"):
-        
+        mag_distance: str = "L1",
+        name: str = "stft_loss"):
+        self.name = name
         self.fft_size = fft_size
         self.hop_size = hop_size
         self.win_length = win_length
@@ -240,9 +310,11 @@ class STFTLoss(nnx.Module):
             self.fb = 1 # identity
 
         if self.perceptual_weighting:
-            raise ValueError(
-                    "no"
-                )
+            # raise ValueError(
+                    # "no"
+                # )
+            assert sample_rate is not None
+            self.prefilter = FIRFilter(filter_type="aw", fs=int(sample_rate))
     def _stft(self, x):
         x_stft = stft(
             x,
@@ -260,7 +332,21 @@ class STFTLoss(nnx.Module):
             x_phs = None
 
         return x_mag, x_phs
-    def __call__(self, input, target):
+    def __call__(self, input: jnp.ndarray, target):
+        bs, seq_len, chs = input.shape
+        if self.perceptual_weighting:  # apply optional A-weighting via FIR filter
+            # since FIRFilter only support mono audio we will move channels to batch dim
+            input = jnp.transpose(input, [2, 1, 0]) # hacky way to move channels to batch dim, breaks on bs > 1
+            target = jnp.transpose(target, [2, 1, 0])
+            # input = input.view(bs * chs, 1, -1)
+            # target = target.view(bs * chs, 1, -1)
+
+            # now apply the filter to both
+            input, target = self.prefilter(input, target)
+
+            # now move the channels back
+            input = input.reshape(bs, -1, chs)
+            target = target.reshape(bs, -1, chs)
         x_mag, x_phs = self._stft(input)
         y_mag, y_phs = self._stft(target)
         
@@ -378,7 +464,25 @@ class SumAndDifferenceSTFTLoss(nnx.Module):
             window=window,
             **kwargs
         )
-
+    def __call__(self, input, target):
+        print(input.shape, target.shape)
+        # (b, l, c)
+        if input.shape[1] != target.shape[1]:
+            #no worries, crop
+            minlen = min(input.shape[1], target.shape[1]) 
+            input = input[:, :minlen, :]
+            target = target[:, :minlen, :]
+        # compute sum and difference signals for both
+        input_sum, input_diff = self.sd(input)
+        target_sum, target_diff = self.sd(target)
+        # compute error in STFT domain
+        sum_loss = self.mrstft(input_sum, target_sum)
+        diff_loss = self.mrstft(input_diff, target_diff)
+        loss = ((self.w_sum * sum_loss) + (self.w_diff * diff_loss)) / 2 # type: ignore
+        if self.output == "loss":
+            return loss
+        elif self.output == "full":
+            return loss, sum_loss, diff_loss
 class AuralossLoss(nnx.Module):
     def __init__(self, auraloss_module, input_key: str, target_key: str, weight: float = 1, name: str|None = None):
         

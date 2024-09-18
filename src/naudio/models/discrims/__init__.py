@@ -1,1 +1,1 @@
-from vae import EncodecDiscriminator, OobleckDiscriminator
+from .vae import EncodecDiscriminator, OobleckDiscriminator

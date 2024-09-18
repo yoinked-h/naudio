@@ -64,18 +64,27 @@ class AudioDataset:
         return len(self.data)
 
 class PureAudioDataset():
-    def __init__(self, datasetconfig):
+    def __init__(self, datasetconfig, preload=False):
         self.audio_dir = datasetconfig["audio_dir"]
         self.audio_ext = datasetconfig["audio_ext"]
+        self.preload = preload
         self.setup()
     def setup(self):
         self.data = []
         for path in Path(self.audio_dir).rglob(f"*{self.audio_ext}"):
-            self.data.append(sfparse(path))
+            if self.preload:
+                self.data.append(sfparse(path))
+            else:
+                self.data.append(path)
     def get(self, idx, stepnum):
+        if self.preload:
+            aud = self.data[idx]
+            return aud
         aud = self.data[idx]
+        aud = sfparse(aud)
         return aud
     def __iter__(self):
-        return iter(self.data)
+        for i in range(len(self.data)):
+            yield self.get(i, 0)
     def __len__(self):
         return len(self.data)

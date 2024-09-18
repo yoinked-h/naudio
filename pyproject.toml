@@ -34,7 +34,7 @@ dependencies = [
   "scipy",
   "orbax",
   "safetensors",
-  "tensorboard"
+  "neptune"
 ]
 
 [project.optional-dependencies]

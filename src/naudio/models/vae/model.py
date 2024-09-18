@@ -14,7 +14,7 @@ def torchfix(n, k, d=1):
     return d*(k-1)-n
 
 class ResidualUnit(nnx.Module):
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __init__(self, in_features: int, out_features: int, dilation: int, use_snake: bool, rngs: nnx.Rngs) -> None:
         self.dilation = dilation
         padding = (dilation * (7-1)) // 2
@@ -28,7 +28,7 @@ class ResidualUnit(nnx.Module):
             in_features=out_features, out_features=out_features, kernel_size=1, rngs=rngs
         ),
         ]
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __call__(self, x):
         res = x
         for n in self.layers:
@@ -36,7 +36,7 @@ class ResidualUnit(nnx.Module):
         return x + res
 
 class EncoderBlock(nnx.Module):
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __init__(self, in_features: int, out_features: int, stride: int, use_snake: bool, rngs: nnx.Rngs) -> None:
         self.layers = nnx.Sequential(
             ResidualUnit(in_features, in_features, 1, use_snake, rngs),
@@ -47,24 +47,24 @@ class EncoderBlock(nnx.Module):
             in_features=in_features, out_features=out_features, kernel_size=2*stride, strides=[stride], padding=math.ceil(stride/2), rngs=rngs
         ))
         self.out_features = out_features
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __call__(self, x):
         a = self.layers(x)
         return a
 
 class NNUpsampler(nnx.Module):
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __init__(self, in_features: int, out_features: int, stride:int, rngs:nnx.Rngs):
         self.scale_factor = stride
         self.conv = nnx.Conv(in_features=in_features, out_features=out_features, kernel_size=2*stride,strides=[1],use_bias=False, rngs=rngs)
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __call__(self,x: jnp.ndarray):
         #hijacking the image resize for audio, blegh
         x = jax.image.resize(x, (x.shape[0], x.shape[1] * self.scale_factor, x.shape[2]), "nearest").astype(x.dtype) # blegh...
         x = self.conv(x)
         return x
 class DecoderBlock(nnx.Module):
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __init__(self, in_features: int, out_features: int, stride: int, use_snake: bool, use_nearest_neighbor: bool, rngs: nnx.Rngs) -> None:
         if use_nearest_neighbor:
             upsampler = NNUpsampler(in_features, out_features, stride, rngs)
@@ -77,7 +77,7 @@ class DecoderBlock(nnx.Module):
             ResidualUnit(out_features, out_features, 3, use_snake, rngs),
             ResidualUnit(out_features, out_features, 9, use_snake, rngs),
         )
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __call__(self, x):
         return self.layers(x)
 
@@ -91,7 +91,7 @@ class EncoderArgs:
     use_snake: bool = True
 
 class OobleckEncoder(nnx.Module):
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __init__(self, EncoderArgs: EncoderArgs, rngs: nnx.Rngs) -> None:
         c_mults = (1,) + EncoderArgs.c_mults
         self.depth = len(c_mults)
@@ -107,7 +107,7 @@ class OobleckEncoder(nnx.Module):
             nnx.Conv(in_features=c_mults[-1] * EncoderArgs.channels, out_features=EncoderArgs.latent_dim, kernel_size=3, padding=1, rngs=rngs)
         ]
         self.layers = nnx.Sequential(*layers)
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __call__(self, x):
         return self.layers(x)
 
@@ -123,7 +123,7 @@ class DecoderArgs:
     final_tanh: bool = False
 
 class OobleckDecoder(nnx.Module):
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __init__(self, DecoderArgs: DecoderArgs, rngs: nnx.Rngs) -> None:
         c_mults = (1,) + DecoderArgs.c_mults
         self.depth = len(c_mults)
@@ -146,7 +146,7 @@ class OobleckDecoder(nnx.Module):
         ]
         self.layers = nnx.Sequential(*layers)
         self.use_tanh = DecoderArgs.final_tanh
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __call__(self,x):
         x = self.layers(x)
         if self.use_tanh:
@@ -162,7 +162,7 @@ def vae_sample(mean, scale):
     return latents, kl
 
 class VaeBottleneck(nnx.Module):
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __init__(self):
         self.is_discrete = False # does this even do anything?
     def encode(self, x: Array,return_info: bool = False) -> Array:
@@ -189,7 +189,7 @@ class VaeArgs:
     final_tanh: bool = False
     
 class AudioOobleckVae(nnx.Module):
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def __init__(self, VaeArgs: VaeArgs, rngs: nnx.Rngs) -> None:
         encargs = EncoderArgs(
             in_features=VaeArgs.features,
@@ -213,12 +213,12 @@ class AudioOobleckVae(nnx.Module):
         self.decoder = OobleckDecoder(decargs, rngs=rngs)
         self.bottleneck = VaeBottleneck()
         self.audio_channels = VaeArgs.features
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def encode(self, x, return_info: bool = False) -> Array:
         x = self.bottleneck.encode(self.encoder(x), return_info=return_info) # this is Bad:tm:
         # x = self.encoder(x)
         return x
-    @jaxtyped(typechecker=beartype)
+    # @jaxtyped(typechecker=beartype)
     def decode(self, x) -> Array:
         return self.decoder(x)
 
