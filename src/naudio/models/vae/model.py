@@ -13,6 +13,8 @@ def torchfix(n, k, d=1):
     # return n # a
     return d*(k-1)-n
 
+class Loss(nnx.Variable): pass
+
 class ResidualUnit(nnx.Module):
     # @jaxtyped(typechecker=beartype)
     def __init__(self, in_features: int, out_features: int, dilation: int, use_snake: bool, rngs: nnx.Rngs) -> None:
@@ -170,6 +172,7 @@ class VaeBottleneck(nnx.Module):
         mean, scale = jnp.split(x, 2, axis=-1)
         x, kl = vae_sample(mean, scale)
         info['kl'] = kl
+        self.kl_loss = Loss(kl)
         if return_info: 
             return x, info # type: ignore
         else:
@@ -218,6 +221,11 @@ class AudioOobleckVae(nnx.Module):
         x = self.bottleneck.encode(self.encoder(x), return_info=return_info) # this is Bad:tm:
         # x = self.encoder(x)
         return x
+    def __call__(self, x):
+        z = self.encode(x)
+        logit = self.decoder(z)
+        logit = jnp.reshape(logit, (-1, self.audio_channels))
+        return logit
     # @jaxtyped(typechecker=beartype)
     def decode(self, x) -> Array:
         return self.decoder(x)

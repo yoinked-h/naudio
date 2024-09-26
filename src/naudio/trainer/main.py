@@ -6,7 +6,15 @@ import json
 import optax
 from naudio.models import StableAudioOpen
 from naudio.dataset import AudioDataset
-from .vae import AudioVaeTrainer, TrainState
+
+class TrainState(nnx.Optimizer):
+    def __init__(self, model, tx, metrics):
+        self.metrics = metrics
+        super().__init__(model, tx)
+    def update(self, *, grads, **updates): #type: ignore
+        self.metrics.update(**updates)
+        super().update(grads)
+
 def main(model_config_path: Path, dataset_config_path: Path, train_config_path: Path):
     tcfg = json.loads(train_config_path.read_text())
     if tcfg["model"] != "stable-audio-open":
