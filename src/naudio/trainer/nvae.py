@@ -37,10 +37,11 @@ if __name__ == "__main__":
     opt = optax.adamw(learning_rate=5e-4, b1=0.9, b2=0.999)
     epochs = 1000
     from naudio.dataset.dataset import PureAudioDataset
-    import json
+    import json, tqdm
     datasetpath = "./src/naudio/configs/datasets/test.json"
     dataset = PureAudioDataset(json.load(open(datasetpath)))
-    for epoch in range(epochs):
+    for epoch in tqdm.tqdm(range(epochs)):
         for x in dataset:
             loss = trainstep(vae, opt, x)
+            print(f"epoch: {epoch}, loss: {loss}")
             print(f"epoch: {epoch}, loss: {loss}")
