@@ -76,7 +76,7 @@ class PureAudioDataset():
                 self.data.append(sfparse(path))
             else:
                 self.data.append(path)
-    def get(self, idx, stepnum):
+    def get(self, idx, stepnum=0) -> jnp.ndarray:
         if self.preload:
             aud = self.data[idx]
             return aud
