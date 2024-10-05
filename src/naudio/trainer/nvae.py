@@ -6,9 +6,8 @@ from naudio.models.vae import AudioOobleckVae, VaeArgs
 from naudio.models.discrims import EncodecDiscriminator
 import optax
 class Loss(nnx.Variable):pass
-
-@jax.jit
-def trainstep(vae: AudioOobleckVae, opt: nnx.Optimizer, x: jnp.ndarray, **kwargs):
+@nnx.jit
+def trainstep(vae: AudioOobleckVae, opt: nnx.Optimizer, x: jnp.ndarray):
     def gen_loss_fn(vae: AudioOobleckVae):
         logits = vae(x)
         losses = nnx.pop(vae, Loss)
@@ -19,7 +18,7 @@ def trainstep(vae: AudioOobleckVae, opt: nnx.Optimizer, x: jnp.ndarray, **kwargs
         loss = reconstruction_loss + 0.1 * kl_loss
         return loss
     
-    loss, grads = jax.value_and_grad(gen_loss_fn)(vae)
+    loss, grads = nnx.value_and_grad(gen_loss_fn)(vae)
     opt.update(grads)
     return loss
 
@@ -33,15 +32,17 @@ if __name__ == "__main__":
         strides = (2, 4, 4, 8, 8),
         use_snake=True
     )
-    vae = AudioOobleckVae(args, nnx.Rngs(0x7e57))
-    opt = optax.adamw(learning_rate=5e-4, b1=0.9, b2=0.999)
-    epochs = 1000
-    from naudio.dataset.dataset import PureAudioDataset
-    import json, tqdm
-    datasetpath = "./src/naudio/configs/datasets/test.json"
-    dataset = PureAudioDataset(json.load(open(datasetpath)))
-    for epoch in tqdm.tqdm(range(epochs)):
-        for x in dataset:
-            loss = trainstep(vae, opt, x)
-            print(f"epoch: {epoch}, loss: {loss}")
-            print(f"epoch: {epoch}, loss: {loss}")
+    with jax.default_device(jax.devices('cpu')[0]):
+        dtype = jnp.float16
+        vae = AudioOobleckVae(args, nnx.Rngs(0x7e57), dtype=dtype)
+        opt = nnx.Optimizer(vae, optax.adamw(learning_rate=5e-4, b1=0.9, b2=0.999))
+        epochs = 1000
+        from naudio.dataset.dataset import PureAudioDataset
+        import json, tqdm
+        datasetpath = "./src/naudio/configs/datasets/test.json"
+        dataset = PureAudioDataset(json.load(open(datasetpath)), snapto=2048, dtype=dtype) #48khz since that is div by 2048
+        for epoch in tqdm.tqdm(range(epochs)):
+            for x in dataset:
+                loss = trainstep(vae, opt, x)
+                print(f"epoch: {epoch}, loss: {loss}")
+                print(f"epoch: {epoch}, loss: {loss}")

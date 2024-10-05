@@ -17,17 +17,17 @@ class Loss(nnx.Variable): pass
 
 class ResidualUnit(nnx.Module):
     # @jaxtyped(typechecker=beartype)
-    def __init__(self, in_features: int, out_features: int, dilation: int, use_snake: bool, rngs: nnx.Rngs) -> None:
+    def __init__(self, in_features: int, out_features: int, dilation: int, use_snake: bool, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         self.dilation = dilation
         padding = (dilation * (7-1)) // 2
         self.layers = [
-        get_activation('snake' if use_snake else 'elu', out_features),
+        get_activation('snake' if use_snake else 'elu', out_features, dtype=dtype),
         nnx.Conv(
-            in_features=in_features, out_features=out_features, kernel_size=7, padding=padding, kernel_dilation=dilation, rngs=rngs
+            in_features=in_features, out_features=out_features, kernel_size=7, padding=padding, kernel_dilation=dilation, rngs=rngs, dtype=dtype
         ),
-        get_activation('snake' if use_snake else 'elu', out_features),
+        get_activation('snake' if use_snake else 'elu', out_features, dtype=dtype),
         nnx.Conv(
-            in_features=out_features, out_features=out_features, kernel_size=1, rngs=rngs
+            in_features=out_features, out_features=out_features, kernel_size=1, rngs=rngs, dtype=dtype
         ),
         ]
     # @jaxtyped(typechecker=beartype)
@@ -39,14 +39,14 @@ class ResidualUnit(nnx.Module):
 
 class EncoderBlock(nnx.Module):
     # @jaxtyped(typechecker=beartype)
-    def __init__(self, in_features: int, out_features: int, stride: int, use_snake: bool, rngs: nnx.Rngs) -> None:
+    def __init__(self, in_features: int, out_features: int, stride: int, use_snake: bool, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         self.layers = nnx.Sequential(
-            ResidualUnit(in_features, in_features, 1, use_snake, rngs),
-            ResidualUnit(in_features, in_features, 3, use_snake, rngs),
-            ResidualUnit(in_features, in_features, 9, use_snake, rngs),
-            get_activation('snake' if use_snake else 'elu', in_features),
+            ResidualUnit(in_features, in_features, 1, use_snake, rngs, dtype=dtype),
+            ResidualUnit(in_features, in_features, 3, use_snake, rngs, dtype=dtype),
+            ResidualUnit(in_features, in_features, 9, use_snake, rngs, dtype=dtype),
+            get_activation('snake' if use_snake else 'elu', in_features, dtype=dtype),
             nnx.Conv(
-            in_features=in_features, out_features=out_features, kernel_size=2*stride, strides=[stride], padding=math.ceil(stride/2), rngs=rngs
+            in_features=in_features, out_features=out_features, kernel_size=2*stride, strides=[stride], padding=math.ceil(stride/2), rngs=rngs, dtype=dtype
         ))
         self.out_features = out_features
     # @jaxtyped(typechecker=beartype)
@@ -56,9 +56,9 @@ class EncoderBlock(nnx.Module):
 
 class NNUpsampler(nnx.Module):
     # @jaxtyped(typechecker=beartype)
-    def __init__(self, in_features: int, out_features: int, stride:int, rngs:nnx.Rngs):
+    def __init__(self, in_features: int, out_features: int, stride:int, rngs:nnx.Rngs, dtype=jnp.float32) -> None:
         self.scale_factor = stride
-        self.conv = nnx.Conv(in_features=in_features, out_features=out_features, kernel_size=2*stride,strides=[1],use_bias=False, rngs=rngs)
+        self.conv = nnx.Conv(in_features=in_features, out_features=out_features, kernel_size=2*stride,strides=[1],use_bias=False, rngs=rngs, dtype=dtype)
     # @jaxtyped(typechecker=beartype)
     def __call__(self,x: jnp.ndarray):
         #hijacking the image resize for audio, blegh
@@ -67,17 +67,17 @@ class NNUpsampler(nnx.Module):
         return x
 class DecoderBlock(nnx.Module):
     # @jaxtyped(typechecker=beartype)
-    def __init__(self, in_features: int, out_features: int, stride: int, use_snake: bool, use_nearest_neighbor: bool, rngs: nnx.Rngs) -> None:
+    def __init__(self, in_features: int, out_features: int, stride: int, use_snake: bool, use_nearest_neighbor: bool, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         if use_nearest_neighbor:
-            upsampler = NNUpsampler(in_features, out_features, stride, rngs)
+            upsampler = NNUpsampler(in_features, out_features, stride, rngs, dtype=dtype)
         else:
-            upsampler = nnx.ConvTranspose(in_features=in_features, out_features=out_features, kernel_size=2*stride, strides=stride, padding=torchfix(math.ceil(stride/2),2*stride), rngs=rngs)
+            upsampler = nnx.ConvTranspose(in_features=in_features, out_features=out_features, kernel_size=2*stride, strides=stride, padding=torchfix(math.ceil(stride/2),2*stride), rngs=rngs, dtype=dtype)
         self.layers = nnx.Sequential(
-            get_activation('snake' if use_snake else 'elu', in_features),
+            get_activation('snake' if use_snake else 'elu', in_features, dtype=dtype),
             upsampler,
-            ResidualUnit(out_features, out_features, 1, use_snake, rngs),
-            ResidualUnit(out_features, out_features, 3, use_snake, rngs),
-            ResidualUnit(out_features, out_features, 9, use_snake, rngs),
+            ResidualUnit(out_features, out_features, 1, use_snake, rngs, dtype=dtype),
+            ResidualUnit(out_features, out_features, 3, use_snake, rngs, dtype=dtype),
+            ResidualUnit(out_features, out_features, 9, use_snake, rngs, dtype=dtype),
         )
     # @jaxtyped(typechecker=beartype)
     def __call__(self, x):
@@ -94,19 +94,19 @@ class EncoderArgs:
 
 class OobleckEncoder(nnx.Module):
     # @jaxtyped(typechecker=beartype)
-    def __init__(self, EncoderArgs: EncoderArgs, rngs: nnx.Rngs) -> None:
+    def __init__(self, EncoderArgs: EncoderArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         c_mults = (1,) + EncoderArgs.c_mults
         self.depth = len(c_mults)
         layers = [
-            nnx.Conv(in_features=EncoderArgs.in_features, out_features=c_mults[0]*EncoderArgs.channels, kernel_size=7, padding=3, rngs=rngs)
+            nnx.Conv(in_features=EncoderArgs.in_features, out_features=c_mults[0]*EncoderArgs.channels, kernel_size=7, padding=3, rngs=rngs, dtype=dtype)
         ] 
         for i in range(self.depth-1):
             layers += [
-                EncoderBlock(c_mults[i] * EncoderArgs.channels, c_mults[i + 1] * EncoderArgs.channels, EncoderArgs.strides[i], EncoderArgs.use_snake, rngs)
+                EncoderBlock(c_mults[i] * EncoderArgs.channels, c_mults[i + 1] * EncoderArgs.channels, EncoderArgs.strides[i], EncoderArgs.use_snake, rngs, dtype=dtype)
             ]
         layers += [
-            get_activation('snake' if EncoderArgs.use_snake else 'elu', c_mults[-1] * EncoderArgs.channels),
-            nnx.Conv(in_features=c_mults[-1] * EncoderArgs.channels, out_features=EncoderArgs.latent_dim, kernel_size=3, padding=1, rngs=rngs)
+            get_activation('snake' if EncoderArgs.use_snake else 'elu', c_mults[-1] * EncoderArgs.channels, dtype=dtype),
+            nnx.Conv(in_features=c_mults[-1] * EncoderArgs.channels, out_features=EncoderArgs.latent_dim, kernel_size=3, padding=1, rngs=rngs, dtype=dtype)
         ]
         self.layers = nnx.Sequential(*layers)
     # @jaxtyped(typechecker=beartype)
@@ -126,11 +126,11 @@ class DecoderArgs:
 
 class OobleckDecoder(nnx.Module):
     # @jaxtyped(typechecker=beartype)
-    def __init__(self, DecoderArgs: DecoderArgs, rngs: nnx.Rngs) -> None:
+    def __init__(self, DecoderArgs: DecoderArgs, rngs: nnx.Rngs, dtype=jnp.float32) -> None:
         c_mults = (1,) + DecoderArgs.c_mults
         self.depth = len(c_mults)
         layers = [
-            nnx.Conv(DecoderArgs.latent_dim, c_mults[-1]*DecoderArgs.channels, kernel_size=7, padding=3, rngs=rngs)
+            nnx.Conv(DecoderArgs.latent_dim, c_mults[-1]*DecoderArgs.channels, kernel_size=7, padding=3, rngs=rngs, dtype=dtype)
         ]
         for i in range(self.depth-1, 0, -1):
             layers += [
@@ -139,12 +139,13 @@ class OobleckDecoder(nnx.Module):
                     stride=DecoderArgs.strides[i-1],
                     use_snake=DecoderArgs.use_snake,
                     use_nearest_neighbor=DecoderArgs.use_nearest_neighbor,
-                    rngs=rngs
+                    rngs=rngs,
+                    dtype=dtype
                 )
             ]
         layers += [
-            get_activation('snake' if DecoderArgs.use_snake else 'elu', c_mults[0] * DecoderArgs.channels),
-            nnx.Conv(c_mults[0] * DecoderArgs.channels, DecoderArgs.out_features, kernel_size=7, padding=3, use_bias=False, rngs=rngs),
+            get_activation('snake' if DecoderArgs.use_snake else 'elu', c_mults[0] * DecoderArgs.channels, dtype=dtype),
+            nnx.Conv(c_mults[0] * DecoderArgs.channels, DecoderArgs.out_features, kernel_size=7, padding=3, use_bias=False, rngs=rngs, dtype=dtype),
         ]
         self.layers = nnx.Sequential(*layers)
         self.use_tanh = DecoderArgs.final_tanh
@@ -159,7 +160,7 @@ def vae_sample(mean, scale):
     stdev = nnx.softplus(scale) + 1e-4
     var = stdev * stdev
     lvar = jnp.log(var)
-    latents = jax.random.normal(jax.random.PRNGKey(0x4361), mean.shape) * stdev + mean # TODO: fix random seed thing eventually
+    latents = jax.random.normal(jax.random.PRNGKey(0x4361), mean.shape, dtype=mean.dtype) * stdev + mean # TODO: fix random seed thing eventually
     kl = (mean*mean + var - lvar - 1).sum(1).mean()
     return latents, kl
 
@@ -193,7 +194,7 @@ class VaeArgs:
     
 class AudioOobleckVae(nnx.Module):
     # @jaxtyped(typechecker=beartype)
-    def __init__(self, VaeArgs: VaeArgs, rngs: nnx.Rngs) -> None:
+    def __init__(self, VaeArgs: VaeArgs, rngs: nnx.Rngs, dtype: jnp.dtype = jnp.float32) -> None:
         encargs = EncoderArgs(
             in_features=VaeArgs.features,
             channels=VaeArgs.channels,
@@ -212,8 +213,8 @@ class AudioOobleckVae(nnx.Module):
             use_nearest_neighbor=VaeArgs.use_nearest_neighbor,
             final_tanh=VaeArgs.final_tanh
         )
-        self.encoder = OobleckEncoder(encargs, rngs=rngs)
-        self.decoder = OobleckDecoder(decargs, rngs=rngs)
+        self.encoder = OobleckEncoder(encargs, rngs=rngs, dtype=dtype)
+        self.decoder = OobleckDecoder(decargs, rngs=rngs, dtype=dtype)
         self.bottleneck = VaeBottleneck()
         self.audio_channels = VaeArgs.features
     # @jaxtyped(typechecker=beartype)
@@ -231,22 +232,23 @@ class AudioOobleckVae(nnx.Module):
         return self.decoder(x)
 
 if __name__ == '__main__':
-    print('testing audio oobleck vae')
-    args = VaeArgs(
-        features=2,
-        channels=128,
-        latent_dim=128,
-        decoder_latent_dim=64,
-        c_mults = (1, 2, 4, 8, 16),
-        strides = (2, 4, 4, 8, 8),
-        use_snake=True
-    )
-    rngs = nnx.Rngs(0x7e57)
-    model = AudioOobleckVae(args, rngs)
+    with jax.default_device(jax.devices('cpu')[0]):
+        print('testing audio oobleck vae')
+        args = VaeArgs(
+            features=2,
+            channels=128,
+            latent_dim=128,
+            decoder_latent_dim=64,
+            c_mults = (1, 2, 4, 8, 16),
+            strides = (2, 4, 4, 8, 8),
+            use_snake=True
+        )
+        rngs = nnx.Rngs(0x7e57)
+        model = AudioOobleckVae(args, rngs, dtype=jnp.bfloat16)
 
-    x = jnp.ones((2**16, 2)).astype('float32') # Batch, Samples/Length, Channels
-    print(x.shape)
-    enc = model.encode(x)
-    print(enc.shape)
-    dec = model.decode(enc)
-    print(dec.shape)
+        x = jnp.ones((1318912, 2)).astype('bfloat16') # Batch, Samples/Length, Channels
+        print(x.shape)
+        enc = model.encode(x)
+        print(enc.shape)
+        dec = model.decode(enc)
+        print(dec.shape)

@@ -2,11 +2,18 @@ import jax
 import jax.numpy as jnp
 from pathlib import Path
 import soundfile as sf
-
-def sfparse(path):
+import librosa
+def sfparse(path, snapto=None, dtype=None):
     x = sf.SoundFile(path)
     npied = x.read(dtype='float32')
     jnpd = jax.device_put(npied)
+    if snapto is not None:
+        seglen = snapto
+        segs = jnpd.shape[0] // seglen
+        maxlen = segs * seglen
+        jnpd = jnpd[:maxlen]
+    if dtype is not None:
+        jnpd = jnpd.astype(dtype)
     return jnpd
 
 class AudioDataset:
@@ -64,16 +71,18 @@ class AudioDataset:
         return len(self.data)
 
 class PureAudioDataset():
-    def __init__(self, datasetconfig, preload=False):
+    def __init__(self, datasetconfig, preload=False, snapto=None, dtype=None):
         self.audio_dir = datasetconfig["audio_dir"]
         self.audio_ext = datasetconfig["audio_ext"]
         self.preload = preload
+        self.snapto = snapto
+        self.dtype = dtype
         self.setup()
     def setup(self):
         self.data = []
         for path in Path(self.audio_dir).rglob(f"*{self.audio_ext}"):
             if self.preload:
-                self.data.append(sfparse(path))
+                self.data.append(sfparse(path, self.snapto, self.dtype))
             else:
                 self.data.append(path)
     def get(self, idx, stepnum=0) -> jnp.ndarray:
@@ -81,7 +90,7 @@ class PureAudioDataset():
             aud = self.data[idx]
             return aud
         aud = self.data[idx]
-        aud = sfparse(aud)
+        aud = sfparse(aud, self.snapto, self.dtype)
         return aud
     def __iter__(self):
         for i in range(len(self.data)):
