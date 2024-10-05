@@ -3,10 +3,12 @@ import jax.numpy as jnp
 from pathlib import Path
 import soundfile as sf
 import librosa
-def sfparse(path, snapto=None, dtype=None):
+def sfparse(path, snapto=None, dtype=None, maxlen=2**16):
     x = sf.SoundFile(path)
     npied = x.read(dtype='float32')
     jnpd = jax.device_put(npied)
+    if maxlen is not None:
+        jnpd = jnpd[:maxlen]
     if snapto is not None:
         seglen = snapto
         segs = jnpd.shape[0] // seglen
