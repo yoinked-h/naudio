@@ -8,6 +8,9 @@ from pathlib import Path
 from json import loads
 from flax import nnx
 from dataclasses import dataclass
+import numpy as np
+from typing import Dict, Any
+from safetensors.torch import save_file, load_file
 DTYPE_DEALIAS = {'fp32': jnp.float32, 'fp16': jnp.float16, 'bf16': jnp.bfloat16,
                 'fp8_e4m3': jnp.float8_e5m2, 'fp8_e5m2': jnp.float8_e5m2} #i have not tested fp8 yet
 
@@ -91,6 +94,129 @@ class StableAudioOpen(nnx.Module):
         return self._tenc_encode(self.tokenizer(x))
     def dit_call(self, latent, timestep, context, global_cond):
         return self.dit(latent, timestep, context, global_cond)
+    
+    def save_safetensors(self, path: str | Path) -> None:
+        """Save model parameters to safetensors format."""
+        path = Path(path)
+        if path.suffix != '.safetensors':
+            path = path.with_suffix('.safetensors')
+        
+        # Get the state dict
+        state_dict = nnx.state(self)
+        
+        # Convert JAX arrays to numpy arrays for safetensors
+        numpy_state = {}
+        def _flatten_state(state, prefix=""):
+            for key, value in state.items():
+                full_key = f"{prefix}.{key}" if prefix else str(key)
+                if isinstance(value, jnp.ndarray):
+                    numpy_state[full_key] = np.array(value)
+                elif hasattr(value, 'items'):
+                    _flatten_state(value, full_key)
+        
+        _flatten_state(state_dict)
+        
+        # Save using safetensors
+        save_file(numpy_state, str(path))
+    
+    @classmethod
+    def load_safetensors(cls, path: str | Path, config: StableAudioOpenConfig, rngs: nnx.Rngs) -> 'StableAudioOpen':
+        """Load model parameters from safetensors format."""
+        path = Path(path)
+        if path.suffix != '.safetensors':
+            path = path.with_suffix('.safetensors')
+        
+        # Load the safetensors file
+        loaded_state = load_file(str(path))
+        
+        # Create a new model instance
+        model = cls(config, rngs)
+        
+        # Get the model's state dict for comparison
+        model_state = nnx.state(model)
+        
+        # Convert numpy arrays back to JAX arrays and reconstruct nested dict
+        jax_state = {}
+        loaded_keys = set()
+        model_keys = set()
+        
+        for key_str, value in loaded_state.items():
+            keys = key_str.split('.')
+            current = jax_state
+            for key in keys[:-1]:
+                if key not in current:
+                    current[key] = {}
+                current = current[key]
+            current[keys[-1]] = jnp.array(value)
+            loaded_keys.add(key_str)
+        
+        # Flatten model state for comparison
+        def flatten_state(state, prefix=""):
+            keys = set()
+            for key, value in state.items():
+                full_key = f"{prefix}.{key}" if prefix else str(key)
+                keys.add(full_key)
+                if hasattr(value, 'items'):
+                    keys.update(flatten_state(value, full_key))
+            return keys
+        
+        model_keys = flatten_state(model_state)
+        
+        # Log key differences
+        missing_in_model = loaded_keys - model_keys
+        missing_in_file = model_keys - loaded_keys
+        
+        if missing_in_model:
+            print(f"Warning: {len(missing_in_model)} keys in safetensors file not found in model:")
+            for key in sorted(missing_in_model):
+                print(f"  - {key}")
+        
+        if missing_in_file:
+            print(f"Warning: {len(missing_in_file)} keys in model not found in safetensors file:")
+            for key in sorted(missing_in_file):
+                print(f"  - {key}")
+        
+        if not missing_in_model and not missing_in_file:
+            print(f"✓ All {len(loaded_keys)} keys matched successfully")
+        
+        # Create a State object and update the model
+        state = nnx.State(jax_state)
+        nnx.update(model, state)
+        
+        return model
+    
+    @classmethod
+    def from_config_and_safetensors(cls, config_path: Path, safetensors_path: str | Path, rngseed: int | None = None) -> 'StableAudioOpen':
+        """Load model from config file and safetensors checkpoint."""
+        if rngseed is not None:
+            rngs = nnx.Rngs(rngseed)
+        else:
+            rngs = nnx.Rngs(0x00000000)
+        
+        # Load config
+        d = loads(config_path.read_text())
+        config = StableAudioOpenConfig(
+            latent_dim=d['latent_dim'],
+            vae_dtype=d['vae']['dtype'],
+            audio_channels=d['audio_channels'],
+            vae_channels=d['vae']['channels'],
+            encoder_latent_dim=d['vae']['encoder_latent_dim'],
+            vae_c_mults=tuple(d['vae']['c_mults']),
+            vae_strides=tuple(d['vae']['strides']),
+            dit_dtype=d['dit']['dtype'],
+            dit_dim=d['dit']['model_dim'],
+            dit_depth=d['dit']['depth'],
+            dit_heads=d['dit']['heads'],
+            dit_patch=d['dit']['patch'],
+            dit_channels=d['vae']['channels'],
+            tenc_dtype=d['text_encoder']['dtype'],
+            tenc_model_dim=d['text_encoder']['model_dim'],
+            tenc_ff_dim=d['text_encoder']['ff_dim'],
+            tenc_attn_heads=d['text_encoder']['num_heads'])
+        
+        # Load from safetensors
+        return cls.load_safetensors(safetensors_path, config, rngs)
+    
     @classmethod
     def from_config_file(cls, pathtoconfig:Path, rngseed:int|None=None):
         if rngseed is not None:

@@ -1,4 +1,4 @@
-from transformers import T5Tokenizer as tk
+from transformers.models.t5 import T5Tokenizer as tk
 
 class T5Tokenizer():
     """wrap the transformers's T5Tokenizer in a easy to use class since i dont want to ['input_ids'] every time"""

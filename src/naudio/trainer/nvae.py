@@ -43,5 +43,3 @@ if __name__ == "__main__":
     for epoch in tqdm.tqdm(range(epochs)):
         for x in dataset:
             loss = trainstep(vae, opt, x)
-            print(f"epoch: {epoch}, loss: {loss}")
-            print(f"epoch: {epoch}, loss: {loss}")

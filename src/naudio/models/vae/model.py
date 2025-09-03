@@ -6,6 +6,10 @@ import jax.numpy as jnp
 from beartype import beartype
 from flax import nnx
 from jaxtyping import Array, jaxtyped
+from safetensors.torch import save_file, load_file
+import numpy as np
+from pathlib import Path
+from typing import Union
 
 TYPE_CHECKER = beartype
 
@@ -229,6 +233,102 @@ class AudioOobleckVae(nnx.Module):
     # @jaxtyped(typechecker=beartype)
     def decode(self, x) -> Array:
         return self.decoder(x)
+    
+    def save_safetensors(self, path: Union[str, Path]) -> None:
+        """Save VAE model parameters to safetensors format."""
+        path = Path(path)
+        if path.suffix != '.safetensors':
+            path = path.with_suffix('.safetensors')
+        
+        # Get the state dict
+        state_dict = nnx.state(self)
+        
+        # Convert JAX arrays to numpy arrays for safetensors
+        numpy_state = {}
+        def _flatten_state(state, prefix=""):
+            for key, value in state.items():
+                full_key = f"{prefix}.{key}" if prefix else str(key)
+                if isinstance(value, jnp.ndarray):
+                    numpy_state[full_key] = np.array(value)
+                elif hasattr(value, 'items'):
+                    _flatten_state(value, full_key)
+        
+        _flatten_state(state_dict)
+        
+        # Save using safetensors
+        save_file(numpy_state, str(path))
+    
+    @classmethod
+    def load_safetensors(cls, path: Union[str, Path], vae_args: VaeArgs, rngs: nnx.Rngs) -> 'AudioOobleckVae':
+        """Load VAE model parameters from safetensors format."""
+        path = Path(path)
+        if path.suffix != '.safetensors':
+            path = path.with_suffix('.safetensors')
+        
+        # Load the safetensors file
+        loaded_state = load_file(str(path))
+        
+        # Create a new model instance
+        model = cls(vae_args, rngs)
+        
+        # Get the model's state dict for comparison
+        model_state = nnx.state(model)
+        
+        # Convert numpy arrays back to JAX arrays and reconstruct nested dict
+        jax_state = {}
+        loaded_keys = set()
+        model_keys = set()
+        
+        for key_str, value in loaded_state.items():
+            keys = key_str.split('.')
+            current = jax_state
+            for key in keys[:-1]:
+                if key not in current:
+                    current[key] = {}
+                current = current[key]
+            current[keys[-1]] = jnp.array(value)
+            loaded_keys.add(key_str)
+        
+        # Flatten model state for comparison
+        def flatten_state(state, prefix=""):
+            keys = set()
+            for key, value in state.items():
+                
+                full_key = f"{prefix}.{key}" if prefix else str(key)
+                if type(value) is not nnx.VariableState:
+                    # this isnt a key we should load
+                    if hasattr(value, 'items'):
+                        keys.update(flatten_state(value, full_key))
+                    continue
+                # check that the value isnt None
+                if value.value is not None:
+                    keys.add(full_key)
+            return keys
+        
+        model_keys = flatten_state(model_state)
+        
+        # Log key differences
+        missing_in_model = loaded_keys - model_keys
+        missing_in_file = model_keys - loaded_keys
+        
+        if missing_in_model:
+            print(f"Warning: {len(missing_in_model)} keys in safetensors file not found in VAE model:")
+            for key in sorted(missing_in_model):
+                print(f"  - {key}")
+        
+        if missing_in_file:
+            print(f"Warning: {len(missing_in_file)} keys in VAE model not found in safetensors file:")
+            for key in sorted(missing_in_file):
+                print(f"  - {key}")
+        
+        if not missing_in_model and not missing_in_file:
+            print(f"✓ All {len(loaded_keys)} VAE keys matched successfully")
+        
+        # Create a State object and update the model
+        state = nnx.State(jax_state)
+        nnx.update(model, state)
+        
+        return model
 
 if __name__ == '__main__':
     print('testing audio oobleck vae')
