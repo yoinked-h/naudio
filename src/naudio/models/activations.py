@@ -37,15 +37,15 @@ class LeakyReLU(nnx.Module):
 
 class Snake(nnx.Module):
     # @jaxtyped(typechecker=beartype)
-    def __init__(self, in_features: int, alpha: float=1.0, alpha_logscale: bool=False) -> None:
+    def __init__(self, in_features: int, alpha: float=1.0, alpha_logscale: bool=False, dtype=jnp.float32, **kwargs) -> None:
         self.in_features = in_features
         self.alpha_logscale = alpha_logscale
         if alpha_logscale:
-            self.alpha = nnx.Param(jnp.zeros(in_features) * alpha)
-            self.beta = nnx.Param(jnp.zeros(in_features) * alpha)
+            self.alpha = nnx.Param(jnp.zeros(in_features, dtype=dtype) * alpha)
+            self.beta = nnx.Param(jnp.zeros(in_features, dtype=dtype) * alpha)
         else:
-            self.alpha = nnx.Param(jnp.ones(in_features) * alpha)
-            self.beta = nnx.Param(jnp.ones(in_features) * alpha)
+            self.alpha = nnx.Param(jnp.ones(in_features, dtype=dtype) * alpha)
+            self.beta = nnx.Param(jnp.ones(in_features, dtype=dtype) * alpha)
         self.eps = 1e-8
     def __call__(self, x: Array) -> Array:
         a = self.alpha.value
@@ -61,7 +61,7 @@ def get_activation(activation: Literal["elu", "snake", "relu", "leaky_relu"]|str
     activation = activation.lower()
     if activation == "snake":
         assert channels is not None
-        return Snake(channels, alpha=1.0, alpha_logscale=True)
+        return Snake(channels, alpha=1.0, alpha_logscale=True, **kwargs)
     elif activation == "elu":
         return ELU()
     elif activation == "relu":

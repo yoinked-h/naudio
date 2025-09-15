@@ -1,6 +1,6 @@
 {
-    "audio_dir": "D:\\code\\zunset\\tod\\",
-    "text_dir": "D:\\code\\zunset\\tod\\",
+    "audio_dir": "/mnt/d/code/zunset/tod/",
+    "text_dir": "/mnt/d/code/zunset/tod/",
     "audio_ext": ".wav",
     "text_ext": ".gemini.txt",
     "text_ext_fallback": ".lpmuse.txt",
