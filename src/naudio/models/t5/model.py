@@ -17,6 +17,9 @@ class T5Config:
     vocab_size: int = 32128
     relative_attention_num_buckets: int = 32
     relative_attention_max_distance: int = 128
+    dropout_rate: float = 0.0
+    pad_token_id: int = 0
+    eos_token_id: int = 1
 class T5LayerNorm(nnx.Module):
     epsilon: float = 1e-6
     def __init__(self, config, rngs:nnx.Rngs):
@@ -24,10 +27,12 @@ class T5LayerNorm(nnx.Module):
         self.weight = nnx.Param(
             jnp.ones(config.d_model), name="weight", rngs=rngs
         )
+        # T5 uses layer norm without bias (beta is registered as buffer of zeros)
+        self.bias = jnp.zeros(config.d_model)
     def __call__(self, x):
         variance = jnp.mean(jnp.square(x), axis=-1, keepdims=True)
         x = x * jax.lax.rsqrt(variance + self.epsilon)
-        return x * self.weight.value
+        return x * self.weight.value + self.bias
 
 class T5DenseActDense(nnx.Module):
     def __init__(self, config, rngs:nnx.Rngs):
@@ -35,10 +40,11 @@ class T5DenseActDense(nnx.Module):
         self.wi = nnx.Linear(config.d_model, config.d_ff, use_bias=False, rngs=rngs)
         self.wo = nnx.Linear(config.d_ff, config.d_model, use_bias=False, rngs=rngs)
         self.act = ReLU()
-    def __call__(self, x):
-
+        self.dropout = nnx.Dropout(config.dropout_rate, rngs=rngs)
+    def __call__(self, x, *, rngs: nnx.Rngs):
         h = self.wi(x)
         h = self.act(h)
+        h = self.dropout(h, rngs=rngs)
         h = self.wo(h)
         return h
 
@@ -47,53 +53,71 @@ class T5LayerFF(nnx.Module):
         self.config = config
         self.t5ln = T5LayerNorm(config, rngs)
         self.dense = T5DenseActDense(config, rngs)
-    def __call__(self, x):
-
+    def __call__(self, x, *, rngs: nnx.Rngs):
         y = self.t5ln(x)
-        y = self.dense(y)
+        y = self.dense(y, rngs=rngs)
         return x + y
 
 class T5Attention(nnx.Module):
     def __init__(self, config, rngs:nnx.Rngs, use_rel_attn:bool=False):
-        self.config = config
-        # todo        
+        self.config: T5Config = config
+        self.heads = config.num_heads
+        self.d_kv = config.d_model // config.num_heads
+        self.scale = self.d_kv ** -0.5
+        
         self.toq = nnx.Linear(config.d_model, config.d_model, use_bias=False, rngs=rngs)
         self.tok = nnx.Linear(config.d_model, config.d_model, use_bias=False, rngs=rngs)
         self.tov = nnx.Linear(config.d_model, config.d_model, use_bias=False, rngs=rngs)
         self.too = nnx.Linear(config.d_model, config.d_model, use_bias=False, rngs=rngs)
+        self.dropout = nnx.Dropout(config.dropout_rate, rngs=rngs)
+        
         if use_rel_attn:
             self.relattnbias = nnx.Embed(config.relative_attention_num_buckets, config.num_heads, rngs=rngs)
         else:
             self.relattnbias = None
 
-    def __call__(self, hidden_states, mask=None):
-        num_heads = self.config.num_heads
-        d_kv = self.config.d_model // num_heads
+    def __call__(self, hidden_states, mask=None, *, rngs: nnx.Rngs):
+        batch_size, seq_length = hidden_states.shape[:2]
 
         # Linear layers for query, key, and value
         q = self.toq(hidden_states)
         k = self.tok(hidden_states)
         v = self.tov(hidden_states)
-        # Reshape heads
-        batch_size, seq_length = hidden_states.shape[:2]
-        q = q.reshape(batch_size, seq_length, num_heads, d_kv).transpose(0, 2, 1, 3)
-        k = k.reshape(batch_size, seq_length, num_heads, d_kv).transpose(0, 2, 1, 3)
-        v = v.reshape(batch_size, seq_length, num_heads, d_kv).transpose(0, 2, 1, 3)
+        
+        # Reshape heads - following PyTorch einops pattern
+        q = q.reshape(batch_size, seq_length, self.heads, self.d_kv).transpose(0, 2, 1, 3)
+        k = k.reshape(batch_size, seq_length, self.heads, self.d_kv).transpose(0, 2, 1, 3)
+        v = v.reshape(batch_size, seq_length, self.heads, self.d_kv).transpose(0, 2, 1, 3)
 
-        # Compute attention scores
-        scores = jnp.matmul(q, k.transpose(0, 1, 3, 2)) / jnp.sqrt(d_kv)
-        scores += self.compute_bias(seq_length, seq_length)
+        # Scale query like PyTorch
+        q = q * self.scale
+
+        # Compute attention scores using einsum like PyTorch
+        scores = jnp.einsum('bhid,bhjd->bhij', q, k)
+        
+        # Add relative position bias
+        bias = self.compute_bias(seq_length, seq_length)
+        if isinstance(bias, (int, float)) and bias == 0.0:
+            pass  # No bias to add
+        else:
+            scores = scores + bias
+        
         # Apply attention mask if provided
         if mask is not None:
-            scores = jnp.where(mask[:, None, None, :] == 0, -1e9, scores)
+            # Match PyTorch masking pattern
+            mask_value = -jnp.finfo(scores.dtype).max
+            mask_expanded = mask[:, None, None, :]  # Expand mask dimensions
+            scores = jnp.where(mask_expanded == 0, mask_value, scores)
 
-        # Compute attention probabilities
-        attn_weights = jax.nn.softmax(scores, axis=-1)
+        # Compute attention probabilities  
+        scores_final = jnp.asarray(scores)  # Ensure it's a proper JAX array
+        attn_weights = jax.nn.softmax(scores_final, axis=-1)
+        attn_weights = self.dropout(attn_weights, rngs=rngs)
 
-        # Apply attention to values
-        context = jnp.matmul(attn_weights, v)
+        # Apply attention to values using einsum like PyTorch
+        context = jnp.einsum('bhij,bhjd->bhid', attn_weights, v)
 
-        # Reshape output
+        # Reshape output - merge heads
         context = context.transpose(0, 2, 1, 3).reshape(batch_size, seq_length, self.config.d_model)
 
         # Final linear layer
@@ -103,12 +127,12 @@ class T5Attention(nnx.Module):
 
     def compute_bias(self, query_length, key_length):
         if self.relattnbias is None:
-            return 0
+            return 0.0
         num_buckets = self.config.relative_attention_num_buckets
         max_distance = self.config.relative_attention_max_distance
         context_position = jnp.arange(query_length)[:, None]
         memory_position = jnp.arange(key_length)[None, :]
-        relative_position = memory_position - context_position
+        relative_position = context_position - memory_position
         relative_position_bucket = self._relative_position_bucket(
             relative_position,
             bidirectional=True,
@@ -119,40 +143,46 @@ class T5Attention(nnx.Module):
         values = self.relattnbias(relative_position_bucket)
         values = values.transpose((2, 0, 1))[None, :, :, :]  # Shape: [1, num_heads, query_length, key_length]
         return values
-
+    
     @staticmethod
     def _relative_position_bucket(relative_position, bidirectional=True, num_buckets=32, max_distance=128):
-        ret = 0
-        n = -relative_position
+        """
+        Adapted from Mesh Tensorflow:
+        https://github.com/tensorflow/mesh/blob/0cb87fe7b797a022c965c9e6e5ac1b6b7a6b3a7b/mesh_tensorflow/transformer/transformer_layers.py#L593
+        """
+        relative_buckets = 0
+        n = -relative_position  # Match PyTorch implementation
+
         if bidirectional:
             num_buckets //= 2
-            ret += (n < 0).astype(jnp.int32) * num_buckets
+            relative_buckets += (n < 0).astype(jnp.int32) * num_buckets  # negative positions get offset
             n = jnp.abs(n)
         else:
             n = jnp.maximum(n, 0)
-        
+
+        # Half of the buckets are for exact increments in positions
         max_exact = num_buckets // 2
         is_small = n < max_exact
-        
+
+        # For larger distances, use logarithmic bucketing
         val_if_large = max_exact + (
-            jnp.log(n.astype(jnp.float32) / max_exact) / jnp.log(max_distance / max_exact) * (num_buckets - max_exact)
+            jnp.log(n.astype(jnp.float32) / max_exact) 
+            / jnp.log(max_distance / max_exact) 
+            * (num_buckets - max_exact)
         ).astype(jnp.int32)
         val_if_large = jnp.minimum(val_if_large, num_buckets - 1)
-        
-        ret += jnp.where(is_small, n, val_if_large)
-        return ret
 
+        relative_buckets += jnp.where(is_small, n, val_if_large)
+        return relative_buckets
 
 class T5LayerSelfAttention(nnx.Module):
     def __init__(self, config, rngs:nnx.Rngs, use_rel_attn:bool=False):
         self.config = config
         self.t5ln = T5LayerNorm(config, rngs)
         self.attention = T5Attention(config,  rngs, use_rel_attn)
-    def __call__(self, x, mask=None):
-
+    def __call__(self, x, mask=None, *, rngs: nnx.Rngs):
         y = self.t5ln(x)
-        y, _ = self.attention(y, mask)
-        
+        y, _ = self.attention(y, mask, rngs=rngs)
         return x + y
 
 class T5Block(nnx.Module):
@@ -160,10 +190,9 @@ class T5Block(nnx.Module):
         self.config = config
         self.attention = T5LayerSelfAttention(config, rngs, use_rel_attn)
         self.ff = T5LayerFF(config, rngs)
-    def __call__(self, x, mask=None):
-        
-        x = self.attention(x, mask)
-        x = self.ff(x)
+    def __call__(self, x, mask=None, *, rngs: nnx.Rngs):
+        x = self.attention(x, mask, rngs=rngs)
+        x = self.ff(x, rngs=rngs)
         return x
 
 class T5Stack(nnx.Module):
@@ -172,21 +201,19 @@ class T5Stack(nnx.Module):
         self.t5ln = T5LayerNorm(config, rngs)
         self.blocks = [T5Block(config, rngs, block_num == 0) for block_num in range(config.num_layers)]
         # block 0 has relative attention
-    def __call__(self, x, mask=None):
-        
-        for block in self.blocks:
-            x = block(x, mask)
+    def __call__(self, x, mask=None, *, rngs: nnx.Rngs):
+        for blockid, block in enumerate(self.blocks):
+            x = block(x, mask, rngs=rngs)
         return self.t5ln(x)
 
 class T5(nnx.Module):
     def __init__(self, config, rngs:nnx.Rngs):
-        self.config = config
+        self.config: T5Config = config
         self.embed = nnx.Embed(self.config.vocab_size, self.config.d_model, rngs=rngs)
         self.encoder = T5Stack(self.config, rngs)
-    def __call__(self, input_ids, attention_mask=None):
+    def __call__(self, input_ids, attention_mask=None, *, rngs: nnx.Rngs) -> jnp.ndarray:
         x = self.embed(input_ids)
-        return self.encoder(x, attention_mask)
-    
+        return self.encoder(x, attention_mask, rngs=rngs)
     def save_safetensors(self, path: Union[str, Path]) -> None:
         """Save T5 model parameters to safetensors format."""
         path = Path(path)
@@ -306,6 +333,8 @@ class T5(nnx.Module):
         nnx.update(model, model_state)
         
         return model
+    
+
 
 
 if __name__ == "__main__":
@@ -320,9 +349,8 @@ if __name__ == "__main__":
     )
     from naudio.models.t5.tokenizer import T5Tokenizer
     tkn = T5Tokenizer()
-    rngs = nnx.Rngs(0x55b1)
-    model = T5(config, rngs)
-    x = tkn("hello world")
-    print(x.shape)
-    x = model(x)
-    print(x.shape)
+    rngs = nnx.Rngs(0x55b2)
+    model = T5.load_safetensors("t5-jax.safetensors", config, rngs)
+    model.eval()
+    x = tkn("This is a test of the T5 model")
+    x = model(x, rngs=rngs)
